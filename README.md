@@ -1,33 +1,43 @@
 # YouTube Shorts AI Agent
 
-Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Shorts — 2–3 video per hari.
+Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Shorts — 1 video per hari, fully AI-generated, zero copyright risk.
 
-## Arsitektur
+## Pipeline
 
 ```
-Research → Metadata → Affiliate → Clip → Telegram (Review) → Drive Upload
-                                                ↓
-                                   Analytics (input manual CSV)
-                                                ↓
-                                            Memory (learning)
+Research → Script → Metadata → Affiliate → Voiceover → Visual → Clip → Telegram (Review)
+                                                                              ↓ Approve
+                                                                    Video dikirim ke Telegram
+                                                                              ↓
+                                                                  Analytics (input CSV manual)
+                                                                              ↓
+                                                                    Memory (adaptive learning)
 ```
 
 ## Stack
 
-- **Node.js v20** — Orchestrator, queue, bot
-- **Python 3.11** — Whisper, PySceneDetect, FFmpeg assembly
-- **SQLite** — Queue, videos, analytics, memory
-- **OpenRouter** — AI untuk research & metadata (Claude/Gemini)
-- **yt-dlp** — Download footage dari YouTube
-- **Google Drive API** — Upload video final
-- **Telegram Bot** — Review & approval system
+| Komponen | Teknologi |
+|---|---|
+| Orchestrator & queue | Node.js v20 + SQLite |
+| Video assembly | Python 3.11 + FFmpeg |
+| LLM (research, script, metadata) | OpenRouter (Claude / Gemini) |
+| Text-to-speech | OpenAI TTS (`tts-1`) |
+| Stock footage | Pexels API (CC licensed) |
+| Review & delivery | Telegram Bot |
+
+## Estimasi Biaya Bulanan
+
+| Skenario | Video/hari | Estimasi |
+|---|---|---|
+| Minimal | 1 | ~$0.50 |
+| Target | 2 | ~$1.00 |
+| Agresif | 3 | ~$1.50 |
 
 ## Setup
 
 ### 1. Clone & install
 
 ```bash
-cd youtube-agent
 npm install
 
 python3 -m venv venv
@@ -42,49 +52,46 @@ cp .env.example .env
 nano .env
 ```
 
-Isi semua nilai berikut:
+| Key | Keterangan | Daftar di |
+|---|---|---|
+| `OPENROUTER_API_KEY` | LLM routing | openrouter.ai |
+| `OPENAI_API_KEY` | Text-to-speech | platform.openai.com |
+| `PEXELS_API_KEY` | Stock footage | pexels.com/api |
+| `TELEGRAM_BOT_TOKEN` | Bot review | @BotFather |
+| `TELEGRAM_CHAT_ID` | Chat ID kamu | kirim pesan ke @userinfobot |
 
-| Key | Keterangan |
-|---|---|
-| `OPENROUTER_API_KEY` | Dari openrouter.ai |
-| `TELEGRAM_BOT_TOKEN` | Dari @BotFather |
-| `TELEGRAM_CHAT_ID` | Chat ID kamu (kirim pesan ke @userinfobot) |
-| `GOOGLE_CLIENT_ID` | Dari Google Cloud Console |
-| `GOOGLE_CLIENT_SECRET` | Dari Google Cloud Console |
-| `GOOGLE_DRIVE_FOLDER_ID` | ID folder Drive tujuan upload |
-
-### 3. Google Drive auth (sekali saja)
+### 3. Jalankan
 
 ```bash
-node scripts/auth-drive.js
-```
-
-Ikuti instruksi — buka URL, copy code, paste ke terminal. File `token.json` akan dibuat otomatis.
-
-### 4. Jalankan (development)
-
-```bash
-# DRY_RUN mode (default) — tidak ada API call nyata
+# DRY_RUN — tidak ada API call, pakai mock data
 DRY_RUN=true node src/index.js
 
 # Langsung trigger pipeline sekarang
 DRY_RUN=true node src/index.js --run-now
 
 # Production
-DRY_RUN=false node src/index.js
+node src/index.js
 ```
 
 ## Telegram Commands
 
 | Command | Fungsi |
 |---|---|
-| `/help` | Daftar perintah |
+| `/trigger` | Mulai pipeline research sekarang |
 | `/status` | Status semua video |
 | `/queue` | Status job queue |
-| `/trigger` | Mulai pipeline research sekarang |
-| `/addshopee` | Tambah Shopee affiliate link |
-| `/listshopee` | Lihat semua Shopee links |
+| `/listshopee` | Lihat semua Shopee affiliate links |
+| `/help` | Daftar perintah |
 | Kirim file `.csv` | Input analytics YouTube |
+
+### Tambah Shopee Link (manual)
+
+Insert langsung ke SQLite:
+
+```sql
+INSERT INTO shopee_links (id, keyword, url, description, is_active, created_at)
+VALUES ('uuid-here', 'nama produk', 'https://shopee.co.id/...', 'Deskripsi singkat', 1, datetime('now'));
+```
 
 ### Format CSV Analytics
 
@@ -98,79 +105,68 @@ title, views, likes, comments, ctr, average percentage viewed (%)
 
 | Waktu | Agent |
 |---|---|
-| 00:00 | Research (cari topik trending) |
-| 00:30 | Metadata (judul, deskripsi, hashtag) |
-| 01:00 | Affiliate (match Shopee links) |
-| 01:30 | Clip (render video) |
-| 02:30 | Telegram (kirim untuk review) |
-| 16:00 | Analytics (proses CSV dari queue) |
-| 16:30 | Memory (update learning weights) |
-| Minggu 03:00 | Cleanup (hapus video rejected >7 hari) |
+| 00:00 | Research — cari topik trending (trigger harian) |
+| Setiap 5 menit | Script, Metadata, Affiliate, Voiceover, Visual, Clip, Telegram — poll queue |
+| 16:00 | Analytics — proses CSV dari queue |
+| 16:30 | Memory — update learning weights |
+| Minggu 03:00 | Cleanup — hapus video rejected >7 hari |
+
+Pipeline sepenuhnya event-driven via queue. Agent poll setiap 5 menit dan langsung return jika tidak ada job — tidak ada race condition antar stage.
 
 ## Output per Video
 
 ```
 output/{video_id}/
-├── raw/source.mp4         # Footage original dari yt-dlp
-├── research.json          # Topik, keywords, source info
-├── metadata.json          # Judul, deskripsi, hashtag
-├── affiliate.json         # Shopee links + formatted description
-├── transcript.json        # Whisper transcript
-├── scenes.json            # Scene detection result
-├── clip_config.json       # Config untuk Python clip agent
-├── clip_state.json        # State untuk resume jika gagal
-├── step1_cropped.mp4      # Intermediate: cropped + sped up
-├── step2_overlay.mp4      # Intermediate: dengan overlay
-├── final.mp4              # Video final siap upload
-├── thumbnail.jpg          # Thumbnail
-├── clip.json              # Clip agent output
-└── upload.json            # Drive URL + file ID
+├── research.json       # Topik, keywords, trending reason
+├── script.json         # Segmen narasi + visual keyword + SFX hint
+├── metadata.json       # Judul, deskripsi, hashtag, affiliate keywords
+├── affiliate.json      # Shopee links + formatted description
+├── voiceover.json      # Path audio per segmen + durasi
+├── visual.json         # Path footage per segmen
+├── clip_config.json    # Config untuk Python clip agent
+├── clip_state.json     # State resume jika render gagal
+├── work/               # Intermediate clips (dibersihkan otomatis)
+├── final.mp4           # Video final
+├── thumbnail.jpg       # Thumbnail
+└── clip.json           # Clip agent output metadata
 ```
 
-## Deploy ke Hetzner CX33
+## Memory System
+
+Memory Agent belajar dari analytics YouTube:
+
+- Setiap topik punya `weight` (0.1 – 10.0)
+- Weight dihitung dari: views (40%) + engagement (35%) + retention (25%)
+- **Weight decay**: topik tidak aktif >7 hari dikurangi 5% per cycle
+- **Max 1000 records**: topik terendah dihapus otomatis
+- Research Agent menggunakan top topics untuk bias topik baru
+
+## Queue System
+
+Jobs disimpan di SQLite:
+
+| Field | Keterangan |
+|---|---|
+| `job_id` | UUID v4 |
+| `correlation_id` | Trace ID per pipeline run |
+| `type` | research, script, metadata, affiliate, voiceover, visual, clip, telegram, analytics, memory |
+| `status` | pending, processing, done, failed |
+| `priority` | high=10, normal=5, low=1 |
+| `retry_count` | Jumlah retry (max 3, configurable via `MAX_RETRY`) |
+| `timeout_at` | Auto-fail jika melewati waktu ini |
+
+Jobs melebihi `max_retry` dipindah ke tabel **dead_letter**.
+
+## Deploy ke VPS
 
 ```bash
-# Pastikan .env sudah diisi dan token.json sudah ada
 bash scripts/deploy.sh <server_ip> root
 ```
 
 ### Monitor di server
 
 ```bash
-journalctl -u youtube-agent -f    # Live logs
-systemctl status youtube-agent    # Status service
-systemctl restart youtube-agent   # Restart
+journalctl -u youtube-agent -f       # Live logs
+systemctl status youtube-agent       # Status service
+systemctl restart youtube-agent      # Restart
 ```
-
-## Queue System
-
-Jobs disimpan di SQLite dengan field:
-- `job_id` — UUID v4
-- `correlation_id` — Trace ID per pipeline run
-- `type` — research | metadata | affiliate | clip | telegram | upload | analytics | memory
-- `status` — pending | processing | done | failed
-- `priority` — high=10, normal=5, low=1
-- `retry_count` — Jumlah retry
-- `max_retry` — Default 3 (configurable via `MAX_RETRY`)
-- `timeout_at` — Auto-fail jika melewati waktu ini
-
-Jobs yang melebihi `max_retry` dipindah ke **dead_letter** table.
-
-## Memory System
-
-Memory Agent belajar dari analytics YouTube:
-- Setiap topik punya `weight` (0.1 – 10.0)
-- Weight dihitung dari: views (40%) + engagement (35%) + retention (25%)
-- **Weight decay**: topik tidak aktif >7 hari dikurangi 5% per cycle
-- **Max 1000 records**: topik terendah dihapus otomatis
-- Research Agent menggunakan top topics untuk prioritas konten baru
-
-## API Keys yang Dibutuhkan
-
-| Service | Daftar di | Biaya |
-|---|---|---|
-| OpenRouter | openrouter.ai | Pay-per-use (~$0.001/req) |
-| Telegram Bot | @BotFather | Gratis |
-| Google Cloud (Drive API) | console.cloud.google.com | Gratis (15GB) |
-| yt-dlp | Built-in | Gratis |
-| FFmpeg | `apt install ffmpeg` | Gratis |
