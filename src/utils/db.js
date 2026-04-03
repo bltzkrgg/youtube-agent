@@ -160,6 +160,9 @@ function requeueJob(id, retryCount, timeoutMs) {
 function moveToDeadLetter(job, errorMsg) {
   const db = getDb();
   const now = new Date().toISOString();
+  const payload = typeof job.payload === 'string'
+    ? job.payload
+    : JSON.stringify(job.payload || {});
   db.prepare(`
     INSERT INTO dead_letter (id, original_job_id, correlation_id, type, payload, error, failed_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -168,7 +171,7 @@ function moveToDeadLetter(job, errorMsg) {
     job.id,
     job.correlation_id,
     job.type,
-    job.payload,
+    payload,
     errorMsg,
     now
   );

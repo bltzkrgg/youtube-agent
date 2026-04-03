@@ -4,7 +4,7 @@ node_modules/
 logs/
 output/
 cache/
-memory/
+/memory/
 __pycache__/
 *.pyc
 .DS_Store

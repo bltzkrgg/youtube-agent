@@ -186,10 +186,10 @@ def _crop_and_loop(source, output, width, height, fps, duration):
     if src_duration <= 0:
         src_duration = duration
 
-    # Crop filter: scale height to target maintaining aspect, then crop width
+    # Scale to cover (both dimensions >= target), then center crop
     vf = (
-        f"scale=iw*{height}/ih:{height},"
-        f"crop={width}:{height}:(iw-{width})/2:0,"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,"
         f"fps={fps}"
     )
 
