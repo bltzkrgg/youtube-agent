@@ -2,13 +2,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-const axios = require('axios');
+const { execSync, spawn } = require('child_process');
 
 const config = require('../../config');
 const logger = require('../../utils/logger');
+const { safeParseJson } = require('../../utils/safeJson');
 const { withRetry } = require('../../utils/retry');
-const { rateLimited } = require('../../utils/rateLimit');
 const { popJob, ackJob, nackJob, pushJob } = require('../../utils/queue');
 const { readVideoJson, writeVideoJson, getVideoDir } = require('../../utils/storage');
 const { validate, VoiceoverOutput } = require('../../schemas');
@@ -66,13 +65,11 @@ async function _processVoiceover(videoId, correlationId) {
   for (const seg of script.segments) {
     const audioPath = path.join(audioDir, `seg_${seg.index}.mp3`);
 
-    // Generate TTS for this segment
     await withRetry(
-      () => rateLimited('openai_tts', () => _generateTTS(seg.text, audioPath), 500),
+      () => _generateEdgeTTS(seg.text, audioPath),
       { maxRetry: config.maxRetry, agent: AGENT, step: `tts_seg_${seg.index}` }
     );
 
-    // Get exact duration via ffprobe
     const duration = _getAudioDuration(audioPath);
 
     voiceoverSegments.push({
@@ -97,7 +94,7 @@ async function _processVoiceover(videoId, correlationId) {
     segments: voiceoverSegments,
     full_audio_path: fullAudioPath,
     total_duration_seconds: parseFloat(totalDuration.toFixed(2)),
-    voice: config.openai.ttsVoice,
+    voice: config.tts.voice,
     version: '1.0',
     created_at: new Date().toISOString(),
   };
@@ -109,30 +106,39 @@ async function _processVoiceover(videoId, correlationId) {
   return data;
 }
 
-// ─── OpenAI TTS API call ──────────────────────────────────────────────────────
+// ─── Edge TTS via Python ──────────────────────────────────────────────────────
 
-async function _generateTTS(text, outputPath) {
-  const res = await axios.post(
-    `${config.openai.baseUrl}/audio/speech`,
-    {
-      model: config.openai.ttsModel,
-      input: text,
-      voice: config.openai.ttsVoice,
-      speed: config.openai.ttsSpeed,
-      response_format: 'mp3',
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${config.openai.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      responseType: 'arraybuffer',
-      timeout: 30000,
-    }
-  );
+function _generateEdgeTTS(text, audioPath) {
+  const scriptPath = path.join(config.paths.python, 'tts.py');
 
-  fs.writeFileSync(outputPath, Buffer.from(res.data));
-  logger.debug(`TTS audio disimpan: ${path.basename(outputPath)}`, { agent: AGENT });
+  return new Promise((resolve, reject) => {
+    const proc = spawn('python3', [
+      scriptPath,
+      text,
+      audioPath,
+      config.tts.voice,
+      config.tts.rate,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    proc.on('close', (code) => {
+      const result = safeParseJson(stdout.trim(), 'tts.py') || {};
+      if (result.error) {
+        reject(new Error(result.error));
+      } else if (code !== 0) {
+        reject(new Error(`edge-tts gagal (exit ${code}): ${stderr.slice(-200)}`));
+      } else {
+        resolve();
+      }
+    });
+
+    proc.on('error', (err) => reject(new Error(`Gagal spawn python3: ${err.message}`)));
+  });
 }
 
 // ─── Get audio duration via ffprobe ──────────────────────────────────────────
@@ -151,7 +157,6 @@ function _getAudioDuration(audioPath) {
 // ─── Concatenate audio files via FFmpeg ──────────────────────────────────────
 
 async function _concatenateAudio(audioPaths, outputPath) {
-  // Build FFmpeg concat filter
   const inputs = audioPaths.map((p) => `-i "${p}"`).join(' ');
   const filterComplex = audioPaths.map((_, i) => `[${i}:a]`).join('') +
     `concat=n=${audioPaths.length}:v=0:a=1[out]`;
@@ -171,7 +176,6 @@ async function _concatenateAudio(audioPaths, outputPath) {
 function _mockVoiceover(videoId, correlationId, script, audioDir) {
   logger.info('[DRY_RUN] Menggunakan data mock untuk Voiceover', { agent: AGENT });
 
-  // Create empty placeholder audio files
   const segments = script.segments.map((seg) => {
     const audioPath = path.join(audioDir, `seg_${seg.index}.mp3`);
     fs.writeFileSync(audioPath, '');
@@ -194,7 +198,7 @@ function _mockVoiceover(videoId, correlationId, script, audioDir) {
     segments,
     full_audio_path: fullAudioPath,
     total_duration_seconds: totalDuration,
-    voice: config.openai.ttsVoice,
+    voice: config.tts.voice,
     version: '1.0',
     created_at: new Date().toISOString(),
   };

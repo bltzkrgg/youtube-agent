@@ -21,7 +21,7 @@ Research → Script → Metadata → Affiliate → Voiceover → Visual → Clip
 | Orchestrator & queue | Node.js v20 + SQLite |
 | Video assembly | Python 3.11 + FFmpeg |
 | LLM (research, script, metadata) | OpenRouter (Claude / Gemini) |
-| Text-to-speech | OpenAI TTS (`tts-1`) |
+| Text-to-speech | edge-tts (Microsoft, gratis) |
 | Stock footage | Pexels API (CC licensed) |
 | Review & delivery | Telegram Bot |
 
@@ -29,9 +29,11 @@ Research → Script → Metadata → Affiliate → Voiceover → Visual → Clip
 
 | Skenario | Video/hari | Estimasi |
 |---|---|---|
-| Minimal | 1 | ~$0.50 |
-| Target | 2 | ~$1.00 |
-| Agresif | 3 | ~$1.50 |
+| Minimal | 1 | ~$0.30 |
+| Target | 2 | ~$0.60 |
+| Agresif | 3 | ~$0.90 |
+
+> TTS gratis via edge-tts. Biaya hanya dari OpenRouter (LLM) dan Pexels (opsional jika melebihi quota gratis).
 
 ## Setup
 
@@ -55,7 +57,6 @@ nano .env
 | Key | Keterangan | Daftar di |
 |---|---|---|
 | `OPENROUTER_API_KEY` | LLM routing (research, script, metadata) | openrouter.ai |
-| `OPENAI_API_KEY` | Text-to-speech | platform.openai.com |
 | `PEXELS_API_KEY` | Stock footage | pexels.com/api |
 | `TELEGRAM_BOT_TOKEN` | Bot review | @BotFather |
 | `TELEGRAM_CHAT_ID` | Chat ID kamu | kirim pesan ke @userinfobot |

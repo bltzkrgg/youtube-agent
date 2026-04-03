@@ -11,10 +11,7 @@ const REQUIRED = [
 ];
 
 if (process.env.DRY_RUN !== 'true') {
-  REQUIRED.push(
-    'OPENAI_API_KEY',
-    'PEXELS_API_KEY'
-  );
+  REQUIRED.push('PEXELS_API_KEY');
 }
 
 for (const key of REQUIRED) {
@@ -36,13 +33,10 @@ const config = {
     baseUrl: 'https://openrouter.ai/api/v1',
   },
 
-  // OpenAI TTS (voiceover)
-  openai: {
-    apiKey: process.env.OPENAI_API_KEY,
-    ttsModel: process.env.TTS_MODEL || 'tts-1',
-    ttsVoice: process.env.TTS_VOICE || 'onyx',
-    ttsSpeed: parseFloat(process.env.TTS_SPEED || '1.0'),
-    baseUrl: 'https://api.openai.com/v1',
+  // Edge TTS (voiceover)
+  tts: {
+    voice: process.env.TTS_VOICE || 'id-ID-ArdiNeural',
+    rate: process.env.TTS_RATE || '+0%',
   },
 
   // Pexels (stock footage)
