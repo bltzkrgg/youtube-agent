@@ -90,16 +90,6 @@ function runMigrations(db) {
       created_at   TEXT NOT NULL
     );
 
-    -- Shopee affiliate links
-    CREATE TABLE IF NOT EXISTS shopee_links (
-      id          TEXT PRIMARY KEY,
-      keyword     TEXT NOT NULL,
-      url         TEXT NOT NULL,
-      description TEXT,
-      is_active   INTEGER NOT NULL DEFAULT 1,
-      created_at  TEXT NOT NULL
-    );
-
     CREATE INDEX IF NOT EXISTS idx_jobs_status    ON jobs(status, priority DESC, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_jobs_type      ON jobs(type, status);
     CREATE INDEX IF NOT EXISTS idx_videos_status  ON videos(status);
@@ -211,26 +201,6 @@ function getVideoByCorrelation(correlationId) {
   return getDb().prepare('SELECT * FROM videos WHERE correlation_id = ?').get(correlationId);
 }
 
-// ─── Shopee Links ────────────────────────────────────────────────────────────
-
-function insertShopeeLink(link) {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO shopee_links (id, keyword, url, description, is_active, created_at)
-    VALUES (@id, @keyword, @url, @description, @is_active, @created_at)
-  `).run(link);
-}
-
-function getShopeeLinks(keyword = null) {
-  const db = getDb();
-  if (keyword) {
-    return db.prepare(
-      "SELECT * FROM shopee_links WHERE is_active = 1 AND keyword LIKE ?"
-    ).all(`%${keyword}%`);
-  }
-  return db.prepare('SELECT * FROM shopee_links WHERE is_active = 1').all();
-}
-
 // ─── Memory ──────────────────────────────────────────────────────────────────
 
 function upsertMemory(record) {
@@ -278,8 +248,6 @@ module.exports = {
   insertJob, getNextPendingJob, lockJob, completeJob, failJob, requeueJob, moveToDeadLetter,
   // Videos
   insertVideo, updateVideo, getVideo, getVideoByCorrelation,
-  // Shopee
-  insertShopeeLink, getShopeeLinks,
   // Memory
   upsertMemory, getAllMemory,
   // Analytics

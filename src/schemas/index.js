@@ -47,24 +47,6 @@ const MetadataOutput = z.object({
   title: z.string().min(5).max(100),
   description: z.string().min(20),
   hashtags: z.array(z.string()).min(3).max(30),
-  affiliate_keywords: z.array(z.string()),
-  version: z.string().default('1.0'),
-  created_at: z.string().datetime(),
-});
-
-// ─── Affiliate Agent ─────────────────────────────────────────────────────────
-
-const AffiliateLink = z.object({
-  keyword: z.string(),
-  url: z.string().url(),
-  description: z.string().optional(),
-});
-
-const AffiliateOutput = z.object({
-  video_id: z.string().uuid(),
-  correlation_id: z.string().uuid(),
-  links: z.array(AffiliateLink),
-  formatted_description: z.string(),
   version: z.string().default('1.0'),
   created_at: z.string().datetime(),
 });
@@ -158,7 +140,6 @@ const OpenRouterMetadataResponse = z.object({
   title: z.string().min(5).max(100),
   description: z.string().min(20),
   hashtags: z.array(z.string()).min(3).max(30),
-  affiliate_keywords: z.array(z.string()),
 });
 
 const OpenRouterScriptResponse = z.object({
@@ -196,7 +177,6 @@ module.exports = {
   ScriptSegment,
   ScriptOutput,
   MetadataOutput,
-  AffiliateOutput,
   VoiceoverSegment,
   VoiceoverOutput,
   VisualSegment,

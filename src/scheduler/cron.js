@@ -43,11 +43,6 @@ const SCHEDULES = [
     agent: () => require('../agents/metadata').runMetadataAgent(),
   },
   {
-    name: 'Affiliate',
-    cron: '*/5 * * * *',
-    agent: () => require('../agents/affiliate').runAffiliateAgent(),
-  },
-  {
     name: 'Voiceover',
     cron: '*/5 * * * *',
     agent: () => require('../agents/voiceover').runVoiceoverAgent(),

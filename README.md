@@ -5,7 +5,7 @@ Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Sh
 ## Pipeline
 
 ```
-Research → Script → Metadata → Affiliate → Voiceover → Visual → Clip → Telegram (Review)
+Research → Script → Metadata → Voiceover → Visual → Clip → Telegram (Review)
                                                                               ↓ Approve
                                                                     Video dikirim ke Telegram
                                                                               ↓
@@ -81,18 +81,8 @@ node src/index.js
 | `/trigger` | Mulai pipeline research sekarang |
 | `/status` | Status semua video |
 | `/queue` | Status job queue |
-| `/listshopee` | Lihat semua Shopee affiliate links |
 | `/help` | Daftar perintah |
 | Kirim file `.csv` | Input analytics YouTube |
-
-### Tambah Shopee Link (manual)
-
-Insert langsung ke SQLite:
-
-```sql
-INSERT INTO shopee_links (id, keyword, url, description, is_active, created_at)
-VALUES ('uuid-here', 'nama produk', 'https://shopee.co.id/...', 'Deskripsi singkat', 1, datetime('now'));
-```
 
 ### Format CSV Analytics
 
@@ -107,7 +97,7 @@ title, views, likes, comments, ctr, average percentage viewed (%)
 | Waktu | Agent |
 |---|---|
 | 00:00 | Research — cari topik trending (trigger harian) |
-| Setiap 5 menit | Script, Metadata, Affiliate, Voiceover, Visual, Clip, Telegram — poll queue |
+| Setiap 5 menit | Script, Metadata, Voiceover, Visual, Clip, Telegram — poll queue |
 | 16:00 | Analytics — proses CSV dari queue |
 | 16:30 | Memory — update learning weights |
 | Minggu 03:00 | Cleanup — hapus video rejected >7 hari |
@@ -150,7 +140,7 @@ Jobs disimpan di SQLite:
 |---|---|
 | `job_id` | UUID v4 |
 | `correlation_id` | Trace ID per pipeline run |
-| `type` | research, script, metadata, affiliate, voiceover, visual, clip, telegram, analytics, memory |
+| `type` | research, script, metadata, voiceover, visual, clip, telegram, analytics, memory |
 | `status` | pending, processing, done, failed |
 | `priority` | high=10, normal=5, low=1 |
 | `retry_count` | Jumlah retry (max 3, configurable via `MAX_RETRY`) |

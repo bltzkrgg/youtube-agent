@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 const { safeParseJson } = require('../utils/safeJson');
 const { popJob, ackJob, nackJob, pushJob } = require('../utils/queue');
 const { readVideoJson } = require('../utils/storage');
-const { updateVideo, getShopeeLinks, getDb } = require('../utils/db');
+const { updateVideo, getDb } = require('../utils/db');
 const { triggerResearch } = require('../agents/research');
 
 const AGENT = 'TelegramBot';
@@ -82,13 +82,12 @@ async function runTelegramAgent() {
 
 async function _sendVideoForReview(videoId, correlationId) {
   const metadata = readVideoJson(videoId, 'metadata.json');
-  const affiliate = readVideoJson(videoId, 'affiliate.json');
   const clip = readVideoJson(videoId, 'clip.json');
   const research = readVideoJson(videoId, 'research.json');
 
   if (!metadata || !clip) throw new Error('Data video tidak lengkap untuk review');
 
-  const description = affiliate?.formatted_description || metadata.description;
+  const description = metadata.description;
   const hashtagStr = metadata.hashtags?.join(' ') || '';
 
   const caption = `🎬 *VIDEO BARU UNTUK REVIEW*\n\n` +
@@ -289,9 +288,8 @@ async function _handleEditTitleConfirm(chatId, newTitle) {
 // ─── View description ─────────────────────────────────────────────────────────
 
 async function _handleViewDesc(chatId, videoId) {
-  const affiliate = readVideoJson(videoId, 'affiliate.json');
   const metadata = readVideoJson(videoId, 'metadata.json');
-  const desc = affiliate?.formatted_description || metadata?.description || '-';
+  const desc = metadata?.description || '-';
 
   // Split into chunks if needed (Telegram 4096 char limit)
   const chunks = _splitMessage(desc, 3900);
@@ -369,10 +367,6 @@ async function _handleCommand(chatId, text, msg) {
       });
       break;
 
-    case '/listshopee':
-      await _sendShopeeList(chatId);
-      break;
-
     default:
       await bot.sendMessage(chatId, `❓ Perintah tidak dikenal: ${_escape(cmd)}`,
         { parse_mode: 'MarkdownV2' });
@@ -426,7 +420,6 @@ async function _sendHelp(chatId) {
     `/trigger \\- Mulai pipeline research sekarang\n` +
     `/status \\- Status videos\n` +
     `/queue \\- Status queue jobs\n` +
-    `/listshopee \\- Lihat semua Shopee links\n\n` +
     `📊 Kirim file \\.csv untuk input analytics YouTube\n\n` +
     `*Mode:* ${config.dryRun ? '🔵 DRY\\_RUN' : '🟢 PRODUCTION'}`;
 
@@ -449,17 +442,6 @@ async function _sendQueueStats(chatId) {
   const lines = stats.map((r) => `• ${r.type}/${r.status}: ${r.count}`).join('\n');
   await bot.sendMessage(chatId, `📋 *Queue Stats:*\n\n${lines || 'Queue kosong'}`,
     { parse_mode: 'MarkdownV2' });
-}
-
-async function _sendShopeeList(chatId) {
-  const links = getShopeeLinks();
-  if (links.length === 0) {
-    await bot.sendMessage(chatId, 'Belum ada Shopee link\\. Gunakan /addshopee untuk menambah\\.',
-      { parse_mode: 'MarkdownV2' });
-    return;
-  }
-  const lines = links.map((l, i) => `${i + 1}\\. *${_escape(l.keyword)}*\n   ${_escape(l.url)}`).join('\n\n');
-  await bot.sendMessage(chatId, `🛍️ *Shopee Links:*\n\n${lines}`, { parse_mode: 'MarkdownV2' });
 }
 
 // ─── Pending state helpers ────────────────────────────────────────────────────

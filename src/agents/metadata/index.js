@@ -32,8 +32,8 @@ async function runMetadataAgent() {
     ackJob(job.id);
     logger.info('Metadata Agent selesai', { agent: AGENT, videoId: video_id });
 
-    // Next: Affiliate
-    pushJob('affiliate', { video_id, correlation_id: result.correlation_id }, {
+    // Next: Voiceover
+    pushJob('voiceover', { video_id, correlation_id: result.correlation_id }, {
       correlationId: result.correlation_id,
       priority: 'normal',
     });
@@ -102,14 +102,11 @@ Buat metadata YouTube Shorts yang maksimalkan CTR dan watch time.
 - Judul: gunakan angka, kata power ("ternyata", "jarang diketahui", "mengejutkan", "gelap"), max 70 karakter
 - Deskripsi: 150-200 kata, informatif, natural keyword placement, call to action
 - Hashtag: 20-25 tag, mix antara populer (#shorts, #faktaunik) dan niche spesifik
-- affiliate_keywords: 3-5 keyword produk yang relevan dengan topik untuk link Shopee
-
 Format JSON persis:
 {
   "title": "...",
   "description": "...",
-  "hashtags": ["#...", "#..."],
-  "affiliate_keywords": ["keyword1", "keyword2"]
+  "hashtags": ["#...", "#..."]
 }
 
 Hanya JSON, tanpa teks lain.`;
@@ -156,7 +153,6 @@ function _mockMetadata(videoId, correlationId, research, script) {
     title: `FAKTA GELAP: ${hook.slice(0, 55)}`,
     description: `Kamu tidak akan percaya fakta-fakta mengejutkan tentang ${research.topic} ini. Konten ini khusus untuk kamu yang penasaran dengan hal-hal yang jarang diketahui orang.\n\nJangan lupa LIKE dan SUBSCRIBE untuk fakta unik setiap hari!\n\n${research.keywords.join(' ')}`,
     hashtags: ['#faktaunik', '#faktaindonesia', '#shorts', '#faktagelap', '#ilmupengetahuan'],
-    affiliate_keywords: research.keywords.slice(0, 3),
     version: '1.0',
     created_at: new Date().toISOString(),
   };

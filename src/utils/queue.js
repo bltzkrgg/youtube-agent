@@ -12,7 +12,7 @@ const PRIORITY = { high: 10, normal: 5, low: 1 };
 /**
  * Push a new job into the queue.
  *
- * @param {string} type           - job type (research|metadata|affiliate|clip|telegram|analytics|memory)
+ * @param {string} type           - job type (research|script|metadata|voiceover|visual|clip|telegram|analytics|memory)
  * @param {Object} payload        - job data
  * @param {Object} opts
  * @param {string} opts.correlationId  - trace ID (generated if not provided)
