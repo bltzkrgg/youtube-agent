@@ -90,35 +90,23 @@ async function _sendVideoForReview(videoId, correlationId) {
   const description = metadata.description;
   const hashtagStr = metadata.hashtags?.join(' ') || '';
 
-  const caption = `🎬 *VIDEO BARU UNTUK REVIEW*\n\n` +
+  // Header with keyboard (MarkdownV2)
+  const header = `🎬 *VIDEO BARU UNTUK REVIEW*\n\n` +
     `📌 *Topik:* ${_escape(research?.topic || '-')}\n` +
     `📝 *Judul:* ${_escape(metadata.title)}\n` +
     `⏱ *Durasi:* ${_escape(String(clip.duration_seconds))}s\n` +
-    `🆔 \`${videoId}\`\n\n` +
-    `*Hashtags:*\n${_escape(hashtagStr.slice(0, 200))}\n\n` +
-    `*Deskripsi preview:*\n${_escape(description.slice(0, 300))}${_escape('...')}`;
+    `🆔 \`${videoId}\``;
 
-  const keyboard = _buildReviewKeyboard(videoId);
+  await bot.sendMessage(config.telegram.chatId, header, {
+    parse_mode: 'MarkdownV2',
+    reply_markup: _buildReviewKeyboard(videoId),
+  });
 
-  // Send thumbnail first
-  if (config.dryRun || !fs.existsSync(clip.thumbnail_path)) {
-    await bot.sendMessage(config.telegram.chatId, caption, {
-      parse_mode: 'MarkdownV2',
-      reply_markup: keyboard,
-    });
-  } else {
-    await bot.sendPhoto(config.telegram.chatId, clip.thumbnail_path, {
-      caption,
-      parse_mode: 'MarkdownV2',
-      reply_markup: keyboard,
-    });
+  // Full description + hashtags as plain text (no parse_mode → no escaping issues)
+  const descMsg = `📝 Deskripsi:\n\n${description}\n\n${hashtagStr}`;
+  for (const chunk of _splitMessage(descMsg, 4096)) {
+    await bot.sendMessage(config.telegram.chatId, chunk);
   }
-
-  // Send full description as separate message
-  await bot.sendMessage(config.telegram.chatId,
-    `📋 *DESKRIPSI LENGKAP:*\n\n${_escape(description.slice(0, 3000))}`,
-    { parse_mode: 'MarkdownV2' }
-  );
 
   logger.info('Video terkirim ke Telegram untuk review', { agent: AGENT, videoId });
 }
@@ -132,7 +120,6 @@ function _buildReviewKeyboard(videoId) {
       ],
       [
         { text: '✏️ Edit Judul', callback_data: `edit_title|${videoId}` },
-        { text: '📄 Lihat Full Desc', callback_data: `view_desc|${videoId}` },
       ],
     ],
   };
@@ -205,8 +192,13 @@ async function _handleApprove(chatId, videoId) {
         supports_streaming: true,
       });
 
-      if (clip.thumbnail_path && fs.existsSync(clip.thumbnail_path)) {
-        await bot.sendPhoto(chatId, clip.thumbnail_path, { caption: '🖼 Thumbnail' });
+      // Send full description + hashtags as plain text for copy-paste
+      if (metadata?.description) {
+        const hashtagStr = metadata.hashtags?.join(' ') || '';
+        const descMsg = `📝 Deskripsi:\n\n${metadata.description}\n\n${hashtagStr}`;
+        for (const chunk of _splitMessage(descMsg, 4096)) {
+          await bot.sendMessage(chatId, chunk);
+        }
       }
     }
 
