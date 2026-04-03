@@ -24,7 +24,6 @@ Research → Script → Metadata → Affiliate → Voiceover → Visual → Clip
 | Text-to-speech | OpenAI TTS (`tts-1`) |
 | Stock footage | Pexels API (CC licensed) |
 | Review & delivery | Telegram Bot |
-| Cloud backup (opsional) | Google Drive API |
 
 ## Estimasi Biaya Bulanan
 
@@ -60,21 +59,8 @@ nano .env
 | `PEXELS_API_KEY` | Stock footage | pexels.com/api |
 | `TELEGRAM_BOT_TOKEN` | Bot review | @BotFather |
 | `TELEGRAM_CHAT_ID` | Chat ID kamu | kirim pesan ke @userinfobot |
-| `GOOGLE_CLIENT_ID` | Google Drive upload (opsional) | console.cloud.google.com |
-| `GOOGLE_CLIENT_SECRET` | Google Drive upload (opsional) | console.cloud.google.com |
-| `GOOGLE_DRIVE_FOLDER_ID` | Folder tujuan upload | Google Drive |
 
-### 3. Auth Google Drive (opsional)
-
-Hanya diperlukan jika ingin upload otomatis ke Google Drive:
-
-```bash
-node scripts/auth-drive.js
-```
-
-Buka URL yang muncul di browser, authorize, lalu paste authorization code. Token tersimpan otomatis di `token.json`.
-
-### 4. Jalankan
+### 3. Jalankan
 
 ```bash
 # DRY_RUN — tidak ada API call, pakai mock data
