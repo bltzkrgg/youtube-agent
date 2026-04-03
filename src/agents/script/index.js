@@ -90,11 +90,11 @@ KEYWORDS: ${research.keywords.join(', ')}
 
 Create a complete SHORT-FORM viral video script (45–55 seconds total) optimized for YouTube Shorts & Instagram Reels.
 
-STRUCTURE REQUIRED:
-- Hook (0–3s): Shock or extreme curiosity. Max 12 words. Makes them FREEZE mid-scroll.
-- Build-up (3–20s): Increase tension. Drop facts that feel unbelievable.
-- Climax (20–40s): The revealing moment. Highest emotional peak.
-- Cliffhanger (40–55s): End with a question or incomplete thought that forces them to comment.
+STRUCTURE REQUIRED (use these exact type values in JSON):
+- "hook" (0–3s): Shock or extreme curiosity. Max 12 words. Makes them FREEZE mid-scroll.
+- "buildup" (3–20s): Increase tension. Drop facts that feel unbelievable.
+- "climax" (20–40s): The revealing moment. Highest emotional peak.
+- "cliffhanger" (40–55s): End with a question or incomplete thought that forces them to comment.
 
 RULES:
 - Use punchy, dramatic Bahasa Indonesia (Gen-Z tone + sedikit formal)
@@ -112,7 +112,7 @@ Respond ONLY with this exact JSON structure:
   "segments": [
     {
       "index": 0,
-      "type": "hook",
+      "type": "hook|buildup|climax|cliffhanger",
       "text": "narasi yang dibacakan",
       "visual_keyword": "english keyword for stock footage",
       "sfx": "sound effect type",

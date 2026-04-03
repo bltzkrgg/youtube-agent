@@ -18,7 +18,9 @@ const ResearchOutput = z.object({
 
 const ScriptSegment = z.object({
   index: z.number().int().nonnegative(),
-  type: z.enum(['hook', 'buildup', 'climax', 'cliffhanger']),
+  type: z.string()
+    .transform((v) => v.toLowerCase().replace(/[-_\s]/g, '') === 'buildup' ? 'buildup' : v)
+    .pipe(z.enum(['hook', 'buildup', 'climax', 'cliffhanger'])),
   text: z.string().min(1),           // narration text for TTS
   visual_keyword: z.string().min(2), // Pexels search query
   sfx: z.string().optional(),        // sound effect hint: whoosh, hit, glitch, silence
@@ -146,7 +148,9 @@ const OpenRouterScriptResponse = z.object({
   hook_line: z.string(),
   segments: z.array(z.object({
     index: z.number().int().nonnegative(),
-    type: z.enum(['hook', 'buildup', 'climax', 'cliffhanger']),
+    type: z.string()
+    .transform((v) => v.toLowerCase().replace(/[-_\s]/g, '') === 'buildup' ? 'buildup' : v)
+    .pipe(z.enum(['hook', 'buildup', 'climax', 'cliffhanger'])),
     text: z.string(),
     visual_keyword: z.string(),
     sfx: z.string().optional(),
