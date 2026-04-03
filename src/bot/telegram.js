@@ -94,10 +94,10 @@ async function _sendVideoForReview(videoId, correlationId) {
   const caption = `🎬 *VIDEO BARU UNTUK REVIEW*\n\n` +
     `📌 *Topik:* ${_escape(research?.topic || '-')}\n` +
     `📝 *Judul:* ${_escape(metadata.title)}\n` +
-    `⏱ *Durasi:* ${clip.duration_seconds}s\n` +
+    `⏱ *Durasi:* ${_escape(String(clip.duration_seconds))}s\n` +
     `🆔 \`${videoId}\`\n\n` +
     `*Hashtags:*\n${_escape(hashtagStr.slice(0, 200))}\n\n` +
-    `*Deskripsi preview:*\n${_escape(description.slice(0, 300))}...`;
+    `*Deskripsi preview:*\n${_escape(description.slice(0, 300))}${_escape('...')}`;
 
   const keyboard = _buildReviewKeyboard(videoId);
 
@@ -201,7 +201,7 @@ async function _handleApprove(chatId, videoId) {
       }
 
       await bot.sendVideo(chatId, clip.final_video_path, {
-        caption: `🎬 ${metadata?.title || videoId}\n\n📁 \`${videoId}\`\n\nDownload file ini, lalu upload manual ke YouTube\\.`,
+        caption: `🎬 ${_escape(metadata?.title || videoId)}\n\n📁 \`${videoId}\`\n\nDownload file ini, lalu upload manual ke YouTube\\.`,
         parse_mode: 'MarkdownV2',
         supports_streaming: true,
       });
