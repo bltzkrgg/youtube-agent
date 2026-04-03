@@ -1,0 +1,29 @@
+{
+  "name": "youtube-agent",
+  "version": "1.0.0",
+  "description": "Autonomous YouTube Shorts Creator untuk konten Fakta Unik Indonesia",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "auth:drive": "node scripts/auth-drive.js",
+    "setup": "node scripts/setup.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "better-sqlite3": "^9.4.3",
+    "dotenv": "^16.4.5",
+    "form-data": "^4.0.0",
+    "googleapis": "^140.0.1",
+    "mime-types": "^2.1.35",
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.66.0",
+    "uuid": "^9.0.1",
+    "winston": "^3.13.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "zod": "^3.23.8"
+  }
+}
