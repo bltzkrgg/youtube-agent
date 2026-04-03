@@ -104,7 +104,7 @@ function nackJob(job, errorMsg) {
 
 function _handleRetryOrDead(job, errorMsg) {
   if (job.retry_count < job.max_retry) {
-    db.requeueJob(job.id, job.retry_count);
+    db.requeueJob(job.id, job.retry_count, config.timeouts.default);
     logger.warn('Job direqueue untuk retry', {
       jobId: job.id,
       retry: job.retry_count,

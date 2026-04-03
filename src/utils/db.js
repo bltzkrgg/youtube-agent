@@ -156,13 +156,15 @@ function failJob(id, errorMsg, retryCount) {
   `).run(errorMsg, retryCount, now, id);
 }
 
-function requeueJob(id, retryCount) {
+function requeueJob(id, retryCount, timeoutMs) {
   const db = getDb();
   const now = new Date().toISOString();
+  const timeoutAt = new Date(Date.now() + (timeoutMs || 1800000)).toISOString();
   db.prepare(`
-    UPDATE jobs SET status = 'pending', retry_count = ?, locked_at = NULL, updated_at = ?
+    UPDATE jobs SET status = 'pending', retry_count = ?, locked_at = NULL,
+                    updated_at = ?, timeout_at = ?
     WHERE id = ?
-  `).run(retryCount, now, id);
+  `).run(retryCount, now, timeoutAt, id);
 }
 
 function moveToDeadLetter(job, errorMsg) {
