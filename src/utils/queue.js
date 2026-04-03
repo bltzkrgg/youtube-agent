@@ -70,9 +70,10 @@ function popJob(type) {
 
   // Check if job has timed out before locking
   if (job.timeout_at && new Date(job.timeout_at) < new Date()) {
-    logger.warn('Job timeout sebelum diproses', { jobId: job.id, type });
-    db.failJob(job.id, 'Job timeout sebelum diproses', job.retry_count);
-    _handleRetryOrDead(job, 'Job timeout sebelum diproses');
+    const newRetryCount = (job.retry_count || 0) + 1;
+    logger.warn('Job timeout sebelum diproses', { jobId: job.id, type, retry: newRetryCount });
+    db.failJob(job.id, 'Job timeout sebelum diproses', newRetryCount);
+    _handleRetryOrDead({ ...job, retry_count: newRetryCount }, 'Job timeout sebelum diproses');
     return null;
   }
 
