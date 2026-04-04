@@ -162,18 +162,9 @@ def process_video(cfg, output_dir, state, state_path):
 
 def _process_segment_clip(footage_path, text, sfx, segment_type, duration,
                            width, height, fps, output_path, is_hook=False):
-    """Crop + loop/trim footage to duration, then burn caption."""
+    """Crop + loop/trim footage to duration. No subtitle overlay."""
 
-    # Step A: Crop to 1080x1920 and trim/loop to exact duration
-    cropped = output_path.replace(".mp4", "_cropped.mp4")
-    _crop_and_loop(footage_path, cropped, width, height, fps, duration)
-
-    # Step B: Burn dramatic caption overlay
-    _burn_caption(cropped, output_path, text, sfx, segment_type, width, height, fps, duration)
-
-    # Clean up intermediate
-    if os.path.exists(cropped) and os.path.exists(output_path):
-        os.remove(cropped)
+    _crop_and_loop(footage_path, output_path, width, height, fps, duration)
 
     return output_path
 

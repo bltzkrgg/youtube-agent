@@ -2,18 +2,21 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const axios = require('axios');
 
 const config = require('../../config');
 const logger = require('../../utils/logger');
 const { withRetry } = require('../../utils/retry');
-const { withCache } = require('../../utils/cache');
-const { rateLimited } = require('../../utils/rateLimit');
 const { popJob, ackJob, nackJob, pushJob } = require('../../utils/queue');
 const { readVideoJson, writeVideoJson, getVideoDir } = require('../../utils/storage');
 const { validate, VisualOutput } = require('../../schemas');
 
 const AGENT = 'VisualAgent';
+
+const KLING_BASE_URL = 'https://api.klingai.com';
+const POLL_INTERVAL_MS = 10000;   // 10s between polls
+const POLL_MAX_ATTEMPTS = 120;    // max 20 minutes per clip
 
 // ─── Main entry ──────────────────────────────────────────────────────────────
 
@@ -24,7 +27,7 @@ async function runVisualAgent() {
     return;
   }
 
-  logger.info('Memulai Visual Agent (Pexels)', { agent: AGENT, jobId: job.id });
+  logger.info('Memulai Visual Agent (KlingAI)', { agent: AGENT, jobId: job.id });
 
   try {
     const { video_id, correlation_id } = job.payload;
@@ -69,16 +72,13 @@ async function _processVisual(videoId, correlationId) {
     const voiceSeg = voiceover.segments.find((v) => v.index === seg.index);
     const segDuration = voiceSeg?.duration_seconds || seg.duration_hint_sec;
 
-    logger.info(`Mencari footage: "${seg.visual_keyword}" (seg ${seg.index})`, { agent: AGENT });
+    logger.info(`Generating KlingAI video: "${seg.visual_keyword}" (seg ${seg.index})`, { agent: AGENT });
 
-    const footagePath = await withRetry(
-      () => rateLimited('pexels', () => _fetchAndDownloadFootage(
-        seg.visual_keyword,
-        footageDir,
-        seg.index,
-        segDuration
-      ), 1200),
-      { maxRetry: config.maxRetry, agent: AGENT, step: `visual_seg_${seg.index}` }
+    const footagePath = path.join(footageDir, `seg_${seg.index}.mp4`);
+
+    await withRetry(
+      () => _generateAndDownloadKling(seg, segDuration, footagePath),
+      { maxRetry: config.maxRetry, agent: AGENT, step: `kling_seg_${seg.index}` }
     );
 
     visualSegments.push({
@@ -104,99 +104,128 @@ async function _processVisual(videoId, correlationId) {
   return data;
 }
 
-// ─── Pexels: search + download ────────────────────────────────────────────────
+// ─── KlingAI: generate + poll + download ─────────────────────────────────────
 
-async function _fetchAndDownloadFootage(keyword, footageDir, segIndex, durationSec) {
-  const cacheKey = `pexels_${keyword.toLowerCase().replace(/\s+/g, '_')}`;
+async function _generateAndDownloadKling(seg, durationSec, outputPath) {
+  const taskId = await _submitKlingTask(seg, durationSec);
+  logger.debug(`KlingAI task submitted: ${taskId} (seg ${seg.index})`, { agent: AGENT });
 
-  // Cache Pexels search results (same keyword → same video ID)
-  const videoMeta = await withCache(cacheKey, async () => {
-    return _searchPexels(keyword);
-  }, config.cacheTtlHours);
+  const videoUrl = await _pollKlingTask(taskId, seg.index);
+  await _downloadKlingVideo(videoUrl, outputPath);
 
-  if (!videoMeta) throw new Error(`Tidak ada footage untuk keyword: ${keyword}`);
-
-  const outputPath = path.join(footageDir, `seg_${segIndex}.mp4`);
-
-  // Re-download if file doesn't exist (cache stores metadata only)
-  if (!fs.existsSync(outputPath)) {
-    await _downloadFile(videoMeta.download_url, outputPath);
-  }
-
-  return outputPath;
+  logger.info(`KlingAI clip downloaded → ${path.basename(outputPath)}`, { agent: AGENT });
 }
 
-async function _searchPexels(keyword) {
-  // Try portrait first, fallback to landscape
-  for (const orientation of ['portrait', 'landscape']) {
-    const res = await axios.get(`${config.pexels.baseUrl}/search`, {
-      headers: { Authorization: config.pexels.apiKey },
-      params: {
-        query: keyword,
-        per_page: 10,
-        orientation,
-        size: 'large',
+async function _submitKlingTask(seg, durationSec) {
+  const prompt = _buildPrompt(seg.visual_keyword);
+  const clipDuration = config.kling.duration; // '5' or '10'
+
+  const body = {
+    model: config.kling.model,
+    prompt,
+    negative_prompt: 'text, subtitles, watermark, logo, blurry, low quality, cartoon, animation, nsfw',
+    cfg_scale: 0.5,
+    mode: config.kling.mode,
+    aspect_ratio: '9:16',
+    duration: clipDuration,
+  };
+
+  const res = await axios.post(
+    `${KLING_BASE_URL}/v1/videos/text2video`,
+    body,
+    {
+      headers: {
+        Authorization: `Bearer ${_generateToken()}`,
+        'Content-Type': 'application/json',
       },
-      timeout: 15000,
-    });
-
-    const videos = res.data?.videos || [];
-    if (videos.length === 0) continue;
-
-    // Pick the first video with a usable file
-    for (const video of videos) {
-      const file = _pickBestVideoFile(video.video_files, orientation);
-      if (file) {
-        logger.debug(`Pexels hit: "${keyword}" → video ${video.id} (${orientation})`, { agent: AGENT });
-        return {
-          pexels_id: video.id,
-          download_url: file.link,
-          width: file.width,
-          height: file.height,
-        };
-      }
+      timeout: 30000,
     }
+  );
+
+  if (res.data?.code !== 0) {
+    throw new Error(`KlingAI submit error: ${res.data?.message || JSON.stringify(res.data)}`);
   }
 
-  return null;
+  const taskId = res.data?.data?.task_id;
+  if (!taskId) throw new Error('KlingAI tidak mengembalikan task_id');
+
+  return taskId;
 }
 
-function _pickBestVideoFile(files, preferredOrientation) {
-  if (!files || files.length === 0) return null;
+async function _pollKlingTask(taskId, segIndex) {
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    await _sleep(POLL_INTERVAL_MS);
 
-  // Filter: prefer portrait (height > width) for Shorts
-  const isPortrait = (f) => f.height > f.width;
-  const isLandscape = (f) => f.width >= f.height;
+    const res = await axios.get(
+      `${KLING_BASE_URL}/v1/videos/text2video/${taskId}`,
+      {
+        headers: { Authorization: `Bearer ${_generateToken()}` },
+        timeout: 15000,
+      }
+    );
 
-  const preferred = preferredOrientation === 'portrait'
-    ? files.filter(isPortrait)
-    : files.filter(isLandscape);
+    const taskData = res.data?.data;
+    const status = taskData?.task_status;
 
-  const pool = preferred.length > 0 ? preferred : files;
+    logger.debug(`KlingAI poll [seg ${segIndex}] attempt ${attempt + 1}: ${status}`, { agent: AGENT });
 
-  // Pick highest quality under 1080p
-  const sorted = pool
-    .filter((f) => f.file_type === 'video/mp4')
-    .filter((f) => Math.max(f.width, f.height) <= 1920)
-    .sort((a, b) => Math.max(b.width, b.height) - Math.max(a.width, a.height));
+    if (status === 'succeed') {
+      const videoUrl = taskData?.task_result?.videos?.[0]?.url;
+      if (!videoUrl) throw new Error('KlingAI succeed tapi tidak ada video URL');
+      return videoUrl;
+    }
 
-  return sorted[0] || null;
+    if (status === 'failed') {
+      const msg = taskData?.task_status_msg || 'unknown error';
+      throw new Error(`KlingAI task gagal: ${msg}`);
+    }
+
+    // status: 'submitted' | 'processing' — continue polling
+  }
+
+  throw new Error(`KlingAI task ${taskId} timeout setelah ${POLL_MAX_ATTEMPTS} polls`);
 }
 
-async function _downloadFile(url, outputPath) {
+async function _downloadKlingVideo(url, outputPath) {
   const res = await axios.get(url, {
     responseType: 'arraybuffer',
-    timeout: 60000,
-    headers: { Authorization: config.pexels.apiKey },
+    timeout: 120000,
   });
 
   fs.writeFileSync(outputPath, Buffer.from(res.data));
-  logger.debug(`Footage didownload: ${path.basename(outputPath)} (${_fmtBytes(res.data.byteLength)})`,
-    { agent: AGENT });
 }
 
-function _fmtBytes(b) {
-  return `${(b / 1024 / 1024).toFixed(1)}MB`;
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function _buildPrompt(visualKeyword) {
+  return `${visualKeyword}. Cinematic, dramatic lighting, high quality, smooth motion, no text, no watermark`;
+}
+
+/**
+ * Generate KlingAI JWT token (HS256) from access_key + secret_key.
+ * Token valid for 30 minutes.
+ */
+function _generateToken() {
+  const now = Math.floor(Date.now() / 1000);
+  const header = _b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = _b64url(JSON.stringify({
+    iss: config.kling.accessKey,
+    exp: now + 1800,
+    nbf: now - 5,
+  }));
+  const signature = crypto
+    .createHmac('sha256', config.kling.secretKey)
+    .update(`${header}.${payload}`)
+    .digest('base64url');
+  return `${header}.${payload}.${signature}`;
+}
+
+function _b64url(str) {
+  return Buffer.from(str).toString('base64url');
+}
+
+function _sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ─── Mock (DRY_RUN) ──────────────────────────────────────────────────────────

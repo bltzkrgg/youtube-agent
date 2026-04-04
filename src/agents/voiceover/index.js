@@ -33,10 +33,11 @@ async function runVoiceoverAgent() {
     ackJob(job.id);
     logger.info('Voiceover Agent selesai', { agent: AGENT, videoId: video_id });
 
-    // Next: Visual Agent
+    // Next: Visual Agent (KlingAI generation can take up to 1h for all segments)
     pushJob('visual', { video_id, correlation_id: result.correlation_id }, {
       correlationId: result.correlation_id,
       priority: 'normal',
+      timeoutMs: config.timeouts.visual,
     });
   } catch (err) {
     logger.error('Voiceover Agent gagal', {

@@ -103,7 +103,7 @@ RULES:
 - Add pattern interrupt every 3–5 seconds (zoom hint, glitch, sound hit, silence)
 - Slightly controversial, conspiracy-like tension without being fake news
 
-For each segment, provide a visual_keyword (English, for stock footage search).
+For each segment, provide a visual_keyword (English) — a detailed cinematic scene description for AI video generation (NOT a stock footage search term). Be specific: describe the subject, action, mood, lighting, and camera style. Example: "close-up of a human eye reflecting stars, dark background, slow zoom out, cinematic lighting".
 SFX options: whoosh, hit, glitch, heartbeat, silence_drop, tension_riser, none
 
 Respond ONLY with this exact JSON structure:
