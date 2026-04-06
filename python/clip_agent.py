@@ -5,16 +5,14 @@ Input: config JSON with script segments, voiceover per segment, footage per segm
 Output: final 1080x1920 MP4 + thumbnail.
 
 Pipeline per segment:
-  1. Load footage clip (Pexels)
+  1. Load generated footage clip
   2. Resize/crop to 1080x1920 (center crop)
   3. Loop/trim to match voiceover duration
-  4. Burn caption text with dramatic styling
-  5. Apply SFX visual hint (zoom, glitch filter)
 
 Then:
-  6. Concatenate all segments
-  7. Merge with concatenated voiceover audio
-  8. Generate thumbnail from frame at 1s
+  4. Concatenate all segments
+  5. Merge with concatenated voiceover audio
+  6. Generate thumbnail from frame at 1s
 """
 
 import sys

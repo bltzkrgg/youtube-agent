@@ -9,14 +9,14 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-"setup": "node scripts/setup.js"
+    "setup": "node scripts/setup.js"
   },
   "dependencies": {
     "axios": "^1.7.2",
     "better-sqlite3": "^9.4.3",
     "dotenv": "^16.4.5",
     "form-data": "^4.0.0",
-"mime-types": "^2.1.35",
+    "mime-types": "^2.1.35",
     "node-cron": "^3.0.3",
     "node-telegram-bot-api": "^0.66.0",
     "uuid": "^9.0.1",

@@ -122,6 +122,29 @@ function getNextPendingJob(type) {
   `).get(type);
 }
 
+function claimNextPendingJob(type, now) {
+  const db = getDb();
+  const nowIso = now || new Date().toISOString();
+
+  const row = db.prepare(`
+    UPDATE jobs
+    SET status = 'processing', locked_at = ?, updated_at = ?
+    WHERE id = (
+      SELECT id
+      FROM jobs
+      WHERE type = ?
+        AND status = 'pending'
+        AND (timeout_at IS NULL OR timeout_at >= ?)
+      ORDER BY priority DESC, created_at ASC
+      LIMIT 1
+    )
+      AND status = 'pending'
+    RETURNING *
+  `).get(nowIso, nowIso, type, nowIso);
+
+  return row || null;
+}
+
 function lockJob(id) {
   const db = getDb();
   const now = new Date().toISOString();
@@ -155,6 +178,34 @@ function requeueJob(id, retryCount, timeoutMs) {
                     updated_at = ?, timeout_at = ?
     WHERE id = ?
   `).run(retryCount, now, timeoutAt, id);
+}
+
+function getTimedOutPendingJobs(type, now) {
+  const db = getDb();
+  const nowIso = now || new Date().toISOString();
+  return db.prepare(`
+    SELECT *
+    FROM jobs
+    WHERE status = 'pending'
+      AND type = ?
+      AND timeout_at IS NOT NULL
+      AND timeout_at < ?
+    ORDER BY created_at ASC
+  `).all(type, nowIso);
+}
+
+function getTimedOutProcessingJobs(type, now) {
+  const db = getDb();
+  const nowIso = now || new Date().toISOString();
+  return db.prepare(`
+    SELECT *
+    FROM jobs
+    WHERE status = 'processing'
+      AND type = ?
+      AND timeout_at IS NOT NULL
+      AND timeout_at < ?
+    ORDER BY locked_at ASC, created_at ASC
+  `).all(type, nowIso);
 }
 
 function moveToDeadLetter(job, errorMsg) {
@@ -248,7 +299,8 @@ function closeDb() {
 module.exports = {
   getDb,
   // Jobs
-  insertJob, getNextPendingJob, lockJob, completeJob, failJob, requeueJob, moveToDeadLetter,
+  insertJob, getNextPendingJob, claimNextPendingJob, lockJob, completeJob, failJob, requeueJob,
+  getTimedOutPendingJobs, getTimedOutProcessingJobs, moveToDeadLetter,
   // Videos
   insertVideo, updateVideo, getVideo, getVideoByCorrelation,
   // Memory

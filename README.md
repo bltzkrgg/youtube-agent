@@ -22,7 +22,7 @@ Research → Script → Metadata → Voiceover → Visual → Clip → Telegram 
 | Video assembly | Python 3.11 + FFmpeg |
 | LLM (research, script, metadata) | OpenRouter (Claude / Gemini) |
 | Text-to-speech | edge-tts (Microsoft, gratis) |
-| Stock footage | Pexels API (CC licensed) |
+| Visual generation | KlingAI text-to-video |
 | Review & delivery | Telegram Bot |
 
 ## Estimasi Biaya Bulanan
@@ -33,7 +33,7 @@ Research → Script → Metadata → Voiceover → Visual → Clip → Telegram 
 | Target | 2 | ~$0.60 |
 | Agresif | 3 | ~$0.90 |
 
-> TTS gratis via edge-tts. Biaya hanya dari OpenRouter (LLM) dan Pexels (opsional jika melebihi quota gratis).
+> TTS gratis via edge-tts. Biaya utama berasal dari OpenRouter (LLM) dan KlingAI untuk generasi visual.
 
 ## Setup
 
@@ -57,7 +57,8 @@ nano .env
 | Key | Keterangan | Daftar di |
 |---|---|---|
 | `OPENROUTER_API_KEY` | LLM routing (research, script, metadata) | openrouter.ai |
-| `PEXELS_API_KEY` | Stock footage | pexels.com/api |
+| `KLING_ACCESS_KEY` | API key KlingAI | klingai.com |
+| `KLING_SECRET_KEY` | API secret KlingAI | klingai.com |
 | `TELEGRAM_BOT_TOKEN` | Bot review | @BotFather |
 | `TELEGRAM_CHAT_ID` | Chat ID kamu | kirim pesan ke @userinfobot |
 
@@ -102,7 +103,7 @@ title, views, likes, comments, ctr, average percentage viewed (%)
 | 16:30 | Memory — update learning weights |
 | Minggu 03:00 | Cleanup — hapus video rejected >7 hari |
 
-Pipeline sepenuhnya event-driven via queue. Agent poll setiap 5 menit dan langsung return jika tidak ada job — tidak ada race condition antar stage.
+Pipeline event-driven via queue. Agent poll setiap 5 menit dan langsung return jika tidak ada job. Job yang timeout atau tertinggal di status `processing` akan direcover saat worker berikutnya melakukan polling.
 
 ## Output per Video
 
@@ -110,8 +111,7 @@ Pipeline sepenuhnya event-driven via queue. Agent poll setiap 5 menit dan langsu
 output/{video_id}/
 ├── research.json       # Topik, keywords, trending reason
 ├── script.json         # Segmen narasi + visual keyword + SFX hint
-├── metadata.json       # Judul, deskripsi, hashtag, affiliate keywords
-├── affiliate.json      # Shopee links + formatted description
+├── metadata.json       # Judul, deskripsi, hashtag
 ├── voiceover.json      # Path audio per segmen + durasi
 ├── visual.json         # Path footage per segmen
 ├── clip_config.json    # Config untuk Python clip agent

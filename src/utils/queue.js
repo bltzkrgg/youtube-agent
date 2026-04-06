@@ -65,20 +65,13 @@ function pushJob(type, payload, opts = {}) {
  * Returns null if queue is empty.
  */
 function popJob(type) {
-  const job = db.getNextPendingJob(type);
+  _recoverTimedOutJobs(type);
+
+  const now = new Date().toISOString();
+  const job = db.claimNextPendingJob(type, now);
   if (!job) return null;
 
-  // Check if job has timed out before locking
-  if (job.timeout_at && new Date(job.timeout_at) < new Date()) {
-    const newRetryCount = (job.retry_count || 0) + 1;
-    logger.warn('Job timeout sebelum diproses', { jobId: job.id, type, retry: newRetryCount });
-    db.failJob(job.id, 'Job timeout sebelum diproses', newRetryCount);
-    _handleRetryOrDead({ ...job, retry_count: newRetryCount }, 'Job timeout sebelum diproses');
-    return null;
-  }
-
-  db.lockJob(job.id);
-  logger.info(`Job dikunci untuk diproses`, { type, jobId: job.id });
+  logger.info('Job diklaim untuk diproses', { type, jobId: job.id });
 
   return {
     ...job,
@@ -119,6 +112,38 @@ function _handleRetryOrDead(job, errorMsg) {
       error_message: errorMsg,
       timestamp: new Date().toISOString(),
     });
+  }
+}
+
+function _recoverTimedOutJobs(type) {
+  const now = new Date().toISOString();
+
+  const expiredPending = db.getTimedOutPendingJobs(type, now);
+  for (const job of expiredPending) {
+    const newRetryCount = (job.retry_count || 0) + 1;
+    logger.warn('Job timeout sebelum sempat diproses', {
+      type,
+      jobId: job.id,
+      retry: newRetryCount,
+    });
+    db.failJob(job.id, 'Job timeout sebelum diproses', newRetryCount);
+    _handleRetryOrDead({ ...job, retry_count: newRetryCount }, 'Job timeout sebelum diproses');
+  }
+
+  const expiredProcessing = db.getTimedOutProcessingJobs(type, now);
+  for (const job of expiredProcessing) {
+    const newRetryCount = (job.retry_count || 0) + 1;
+    logger.warn('Job processing stale terdeteksi, merecover ke queue', {
+      type,
+      jobId: job.id,
+      retry: newRetryCount,
+      lockedAt: job.locked_at,
+    });
+    db.failJob(job.id, 'Job processing stale/timeout, direcover setelah restart', newRetryCount);
+    _handleRetryOrDead(
+      { ...job, retry_count: newRetryCount },
+      'Job processing stale/timeout, direcover setelah restart'
+    );
   }
 }
 

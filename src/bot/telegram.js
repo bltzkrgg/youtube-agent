@@ -204,12 +204,10 @@ async function _handleApprove(chatId, videoId) {
 
     updateVideo(videoId, { status: 'uploaded' });
 
-    // Push ke analytics
-    const correlationId = clip?.correlation_id || uuidv4();
-    pushJob('analytics', { video_id: videoId, correlation_id: correlationId }, {
-      correlationId,
-      priority: 'low',
-    });
+    await bot.sendMessage(chatId,
+      '📊 Upload manual ke YouTube setelah file dicek\\. Kirim CSV analytics nanti kalau video sudah punya performa awal\\.',
+      { parse_mode: 'MarkdownV2' }
+    );
 
   } catch (err) {
     logger.error('Gagal mengirim video ke Telegram', { agent: AGENT, videoId, error_message: err.message });
