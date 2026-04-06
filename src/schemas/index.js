@@ -22,7 +22,7 @@ const ScriptSegment = z.object({
     .transform((v) => v.toLowerCase().replace(/[-_\s]/g, '') === 'buildup' ? 'buildup' : v)
     .pipe(z.enum(['hook', 'buildup', 'climax', 'cliffhanger'])),
   text: z.string().min(1),           // narration text for TTS
-  visual_keyword: z.string().min(2), // Pexels search query
+  visual_keyword: z.string().min(2), // AI video prompt seed
   sfx: z.string().optional(),        // sound effect hint: whoosh, hit, glitch, silence
   duration_hint_sec: z.number().positive(),
 });
