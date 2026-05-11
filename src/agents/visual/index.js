@@ -152,7 +152,7 @@ async function _processVisual(videoId, correlationId) {
 // Batching in one call keeps API cost minimal.
 
 async function _enrichPrompts(rawPrompts) {
-  await _sleep(5000); // jeda cooldown 5 detik untuk meminimalisir error 429
+  await new Promise(resolve => setTimeout(resolve, 5000)); // jeda cooldown 5 detik untuk meminimalisir error 429
   const model = config.openrouter.models.visualPrompt; // text LLM via OpenRouter
 
   const listText = rawPrompts

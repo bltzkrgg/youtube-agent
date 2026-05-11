@@ -67,17 +67,17 @@ async function withRetry(fn, opts = {}) {
 function isRetryable(err) {
   if (!err) return false;
   const status = err.response?.status || err.status;
+  const errorBody = (err.message || '').toLowerCase() + JSON.stringify(err.response?.data || '').toLowerCase();
   const nonRetryableStatuses = [400, 401, 403, 404];
 
   if (nonRetryableStatuses.includes(status)) {
-    const errorText = (err.message || '').toLowerCase() + JSON.stringify(err.response?.data || '').toLowerCase();
-    if (errorText.includes('billing') || errorText.includes('precondition')) return false;
+    if (errorBody.includes('billing') || errorBody.includes('precondition')) return false;
     if (status !== 400) return false;
   }
   
   if (err.code && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND'].includes(err.code)) return true;
   if (status === 429 || (status >= 500 && status <= 599)) return true;
-  return (err.message || '').toLowerCase().includes('timeout');
+  return errorBody.includes('timeout');
 }
 
 function sleep(ms) {

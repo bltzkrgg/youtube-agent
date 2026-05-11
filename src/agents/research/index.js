@@ -37,8 +37,8 @@ async function runResearchAgent() {
   const countObj = db.prepare(`SELECT COUNT(*) as c FROM videos WHERE date(created_at) = ?`).get(today);
   
   if (countObj && countObj.c >= (config.maxProductionSlots || 3)) {
-    logger.info('Slot harian penuh', { agent: AGENT });
-    nackJob(job, 'Slot harian penuh');
+    logger.error('Slot produksi harian (MAX_PRODUCTION_SLOTS) sudah penuh', { agent: AGENT });
+    nackJob(job, 'Slot produksi harian (MAX_PRODUCTION_SLOTS) sudah penuh');
     return;
   }
 
