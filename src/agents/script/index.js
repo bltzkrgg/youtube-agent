@@ -134,7 +134,7 @@ ALASAN TRENDING: "${research.trending_reason}"
 KEYWORDS: ${research.keywords.join(', ')}
 
 Tulis script video Shorts (45–55 detik total) dalam Bahasa Indonesia informal/Gen-Z.
-DILARANG KERAS menulis script yang jika dibaca melebihi 55 detik. Targetkan durasi total 50-55 detik untuk keamanan.
+DILARANG KERAS menulis script lebih dari 100 kata. Target durasi suara adalah 45-50 detik agar tidak melampaui batas 60 detik YouTube Shorts.
 Fokus utama: CURIOSITY GAP — buat penonton TIDAK BISA stop nonton karena merasa ketinggalan info penting.
 
 ═══ STRUKTUR WAJIB ═══

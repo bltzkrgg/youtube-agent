@@ -103,7 +103,7 @@ Buat metadata YouTube Shorts yang maksimalkan CTR dan watch time.
 - Deskripsi: 150-200 kata, informatif, natural keyword placement, call to action
 - Hashtag: 20-25 tag, mix antara populer (#shorts, #faktaunik) dan niche spesifik
 
-Field "hashtags" adalah WAJIB. Berikan minimal 5 hashtag relevan dalam bentuk array of strings.
+Output WAJIB JSON murni. Field "hashtags" adalah WAJIB (array of strings, minimal 5 hashtags).
 
 Format JSON persis:
 {

@@ -234,41 +234,19 @@ Return only the JSON object.`;
 
 async function _generateAndDownloadVeo(cinematicPrompt, outputPath) {
   const ai    = _getAI();
-  let model = config.google.model; // e.g. 'veo-1.0'
-
-  if (!model.startsWith('models/')) {
-    model = `models/${model}`;
-  }
+  const model = 'models/veo-001';
 
   logger.debug(`Veo submit: model=${model}`, { agent: AGENT });
 
   // 1. Submit long-running video generation operation
-  let operation;
-  try {
-    operation = await ai.models.generateVideos({
-      model,
-      prompt: cinematicPrompt,
-      config: {
-        aspectRatio:    '9:16',   // Vertical — YouTube Shorts
-        numberOfVideos: 1,
-      },
-    });
-  } catch (err) {
-    if (err.status === 404 || (err.message && err.message.includes('404'))) {
-      logger.warn(`Model ${model} mengembalikan 404. Fallback ke models/veo-0.9...`, { agent: AGENT });
-      model = 'models/veo-0.9';
-      operation = await ai.models.generateVideos({
-        model,
-        prompt: cinematicPrompt,
-        config: {
-          aspectRatio:    '9:16',
-          numberOfVideos: 1,
-        },
-      });
-    } else {
-      throw err;
-    }
-  }
+  let operation = await ai.models.generateVideos({
+    model,
+    prompt: cinematicPrompt,
+    config: {
+      aspectRatio:    '9:16',   // Vertical — YouTube Shorts
+      numberOfVideos: 1,
+    },
+  });
 
   logger.debug(`Veo operation started: ${operation.name}`, { agent: AGENT });
 

@@ -26,18 +26,19 @@ const MAX_YT_RESULTS = 25; // per query, stays within free quota
 // ─── Main entry ──────────────────────────────────────────────────────────────
 
 async function runResearchAgent() {
+  const job = popJob('research');
+  if (!job) {
+    logger.info('Tidak ada job research di queue', { agent: AGENT });
+    return;
+  }
+
   const db = require('../../utils/db').getDb();
   const today = new Date().toISOString().split('T')[0];
   const countObj = db.prepare(`SELECT COUNT(*) as c FROM videos WHERE date(created_at) = ?`).get(today);
   
   if (countObj && countObj.c >= (config.maxProductionSlots || 3)) {
-    logger.info('Slot produksi hari ini sudah habis', { agent: AGENT });
-    return;
-  }
-
-  const job = popJob('research');
-  if (!job) {
-    logger.info('Tidak ada job research di queue', { agent: AGENT });
+    logger.info('Slot produksi harian sudah penuh', { agent: AGENT });
+    nackJob(job, 'Slot produksi harian sudah penuh');
     return;
   }
 
