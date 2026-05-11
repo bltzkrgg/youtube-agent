@@ -111,13 +111,24 @@ async function _sendVideoForReview(videoId, correlationId) {
   logger.info('Video terkirim ke Telegram untuk review', { agent: AGENT, videoId });
 }
 
+// Structured reject reasons — each maps to a MemoryAgent penalty type
+const REJECT_REASONS = {
+  visual_buruk: { label: '🎨 Visual Buruk',  penaltyType: 'visual',  penaltyFactor: 0.4 },
+  topik_garing: { label: '😴 Topik Garing',  penaltyType: 'topic',   penaltyFactor: 0.3 },
+};
+
 function _buildReviewKeyboard(videoId) {
   return {
     inline_keyboard: [
       [
         { text: '✅ APPROVE', callback_data: `approve|${videoId}` },
-        { text: '❌ REJECT', callback_data: `reject|${videoId}` },
+        { text: '❌ REJECT',  callback_data: `reject|${videoId}` },
       ],
+      // Structured reject shortcuts — triggers penalty feedback to MemoryAgent
+      Object.entries(REJECT_REASONS).map(([key, r]) => ({
+        text: r.label,
+        callback_data: `reject_reason|${videoId}|${key}`,
+      })),
       [
         { text: '✏️ Edit Judul', callback_data: `edit_title|${videoId}` },
       ],
@@ -149,6 +160,12 @@ async function _handleCallback(query) {
     case 'reject':
       await _handleRejectStart(chatId, videoId);
       break;
+    case 'reject_reason': {
+      // parts[2] = reasonKey (visual_buruk | topik_garing)
+      const reasonKey = parts[2];
+      await _handleStructuredReject(chatId, videoId, reasonKey);
+      break;
+    }
     case 'edit_title':
       await _handleEditTitleStart(chatId, videoId);
       break;
@@ -241,9 +258,57 @@ async function _handleRejectConfirm(chatId, reason) {
     reject_reason: reason,
   });
 
-  logger.info('Video di-REJECT', { agent: AGENT, videoId, reason });
+  logger.info('Video di-REJECT (manual)', { agent: AGENT, videoId, reason });
   await bot.sendMessage(chatId,
-    `❌ Video \`${videoId}\` di-reject\\.\n📝 Alasan: ${_escape(reason)}`,
+    `❌ Video \`${videoId}\` di\\-reject\\.\n📝 Alasan: ${_escape(reason)}`,
+    { parse_mode: 'MarkdownV2' }
+  );
+}
+
+/**
+ * Structured reject: one-tap button with a known reason key.
+ * Immediately marks video rejected AND queues a memory_penalty job.
+ */
+async function _handleStructuredReject(chatId, videoId, reasonKey) {
+  const reason = REJECT_REASONS[reasonKey];
+  if (!reason) {
+    await bot.sendMessage(chatId, `⚠️ Alasan tidak dikenal: ${_escape(reasonKey)}`,
+      { parse_mode: 'MarkdownV2' });
+    return;
+  }
+
+  const research = readVideoJson(videoId, 'research.json');
+
+  updateVideo(videoId, {
+    status: 'rejected',
+    rejected_at: new Date().toISOString(),
+    reject_reason: reason.label,
+  });
+
+  logger.info('Video di-REJECT (structured)', {
+    agent: AGENT, videoId, reason: reasonKey, penaltyType: reason.penaltyType,
+  });
+
+  // Push feedback to MemoryAgent for weight penalty
+  if (research?.topic) {
+    const correlationId = readVideoJson(videoId, 'clip.json')?.correlation_id || uuidv4();
+    pushJob('memory_penalty', {
+      video_id:      videoId,
+      correlation_id: correlationId,
+      topic:         research.topic,
+      penalty_type:  reason.penaltyType,
+      penalty_factor: reason.penaltyFactor,
+      reason_label:  reason.label,
+    }, {
+      correlationId,
+      priority: 'high',
+    });
+    logger.info('Memory penalty job dikirim', { agent: AGENT, topic: research.topic, reasonKey });
+  }
+
+  await bot.sendMessage(chatId,
+    `${reason.label} — Video \`${videoId}\` di\\-reject\.\n` +
+    `📉 Penalti akan diterapkan ke topik: _${_escape(research?.topic || '-')}_`,
     { parse_mode: 'MarkdownV2' }
   );
 }

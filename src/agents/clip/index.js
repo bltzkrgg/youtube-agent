@@ -75,17 +75,42 @@ async function _processClip(videoId, correlationId) {
 
   if (config.dryRun) return _mockClip(videoId, correlationId, videoDir);
 
+  // Build SFX stem map: { segIndex: sfxFilePath, segIndex_offset_ms: number }
+  // SFX files are expected at: output/{videoId}/sfx/seg_{index}_{sfxName}.mp3
+  const sfxDir   = path.join(videoDir, 'sfx');
+  const sfxStems = {};
+  let voiceOffset = 0;
+  for (const seg of script.segments) {
+    const sfxName = seg.sfx;
+    if (sfxName && sfxName !== 'none') {
+      const sfxPath = path.join(sfxDir, `seg_${seg.index}_${sfxName}.mp3`);
+      if (fs.existsSync(sfxPath)) {
+        sfxStems[seg.index]                   = sfxPath;
+        sfxStems[`${seg.index}_offset_ms`]    = Math.round(voiceOffset * 1000);
+      }
+    }
+    // Accumulate segment offset using actual voiceover duration
+    const vSeg = voiceover.segments.find((v) => v.index === seg.index);
+    voiceOffset += vSeg?.duration_seconds ?? seg.duration_hint_sec;
+  }
+
+  // Background music path (optional — place bg_music.mp3 in project root or configure)
+  const bgMusicPath = process.env.BG_MUSIC_PATH
+    ? path.resolve(process.env.BG_MUSIC_PATH)
+    : null;
+
   // Build Python clip config
   const clipConfig = {
-    video_id: videoId,
-    segments:  script.segments,
-    voiceover: voiceover.segments,
-    footage:   visual.segments,
-    title:     metadata?.title || script.topic,
-    width:     config.video.width,
-    height:    config.video.height,
-    fps:       config.video.fps,
-    full_audio_path: voiceover.full_audio_path,
+    video_id:         videoId,
+    segments:         script.segments,
+    voiceover:        voiceover.segments,
+    footage:          visual.segments,   // each segment now has footage_paths[]
+    width:            config.video.width,
+    height:           config.video.height,
+    fps:              config.video.fps,
+    full_audio_path:  voiceover.full_audio_path,
+    sfx_stems:        sfxStems,
+    bg_music_path:    bgMusicPath,
     output_video:     path.join(videoDir, 'final.mp4'),
     output_thumbnail: path.join(videoDir, 'thumbnail.jpg'),
   };

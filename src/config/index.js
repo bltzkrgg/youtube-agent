@@ -21,37 +21,49 @@ for (const key of REQUIRED) {
   }
 }
 
+const DEFAULT_MODEL = 'anthropic/claude-3-haiku';
+
 const config = {
   // Runtime mode
   dryRun: process.env.DRY_RUN === 'true',
   nodeEnv: process.env.NODE_ENV || 'development',
 
-  // AI — OpenRouter (script, metadata, memory)
+  // AI — OpenRouter (per-agent model override)
   openrouter: {
     apiKey: process.env.OPENROUTER_API_KEY,
-    model: process.env.OPENROUTER_MODEL || 'anthropic/claude-3-haiku',
     baseUrl: 'https://openrouter.ai/api/v1',
+    models: {
+      research:      process.env.RESEARCH_MODEL       || DEFAULT_MODEL,
+      script:        process.env.SCRIPT_MODEL         || DEFAULT_MODEL,
+      metadata:      process.env.METADATA_MODEL       || DEFAULT_MODEL,
+      visualPrompt:  process.env.VISUAL_PROMPT_MODEL  || DEFAULT_MODEL,
+    },
+  },
+
+  // YouTube Data API v3
+  youtube: {
+    apiKey: process.env.YOUTUBE_API_KEY,
   },
 
   // Edge TTS (voiceover)
   tts: {
     voice: process.env.TTS_VOICE || 'id-ID-ArdiNeural',
-    rate: process.env.TTS_RATE || '+0%',
+    rate:  process.env.TTS_RATE  || '+0%',
   },
 
   // KlingAI (AI video generation)
   kling: {
     accessKey: process.env.KLING_ACCESS_KEY,
-    secretKey: process.env.KLING_SECRET_KEY,
-    model: process.env.KLING_MODEL || 'kling-v1-6',
-    mode: process.env.KLING_MODE || 'std',
-    duration: process.env.KLING_DURATION || '5',
+    secretKey:  process.env.KLING_SECRET_KEY,
+    model:      process.env.KLING_MODEL    || 'kling-v1-6',
+    mode:       process.env.KLING_MODE     || 'std',
+    duration:   process.env.KLING_DURATION || '5',
   },
 
   // Telegram
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN,
-    chatId: process.env.TELEGRAM_CHAT_ID,
+    chatId:   process.env.TELEGRAM_CHAT_ID,
   },
 
   // Retry
@@ -59,35 +71,35 @@ const config = {
 
   // Timeouts (ms)
   timeouts: {
-    research: parseInt(process.env.TIMEOUT_RESEARCH || '300000', 10),
-    visual: parseInt(process.env.TIMEOUT_VISUAL || '3600000', 10), // 1h — KlingAI can be slow
-    clip: parseInt(process.env.TIMEOUT_CLIP || '1800000', 10),
-    upload: parseInt(process.env.TIMEOUT_UPLOAD || '600000', 10),
-    default: parseInt(process.env.TIMEOUT_DEFAULT || '1800000', 10),
+    research: parseInt(process.env.TIMEOUT_RESEARCH || '300000',  10),
+    visual:   parseInt(process.env.TIMEOUT_VISUAL   || '3600000', 10), // 1h — KlingAI can be slow
+    clip:     parseInt(process.env.TIMEOUT_CLIP     || '1800000', 10),
+    upload:   parseInt(process.env.TIMEOUT_UPLOAD   || '600000',  10),
+    default:  parseInt(process.env.TIMEOUT_DEFAULT  || '1800000', 10),
   },
 
   // Video
   video: {
-    maxDuration: parseInt(process.env.VIDEO_MAX_DURATION || '55', 10),
-    width: parseInt(process.env.VIDEO_WIDTH || '1080', 10),
-    height: parseInt(process.env.VIDEO_HEIGHT || '1920', 10),
-    fps: parseInt(process.env.VIDEO_FPS || '30', 10),
+    maxDuration: parseInt(process.env.VIDEO_MAX_DURATION || '55',   10),
+    width:       parseInt(process.env.VIDEO_WIDTH        || '1080', 10),
+    height:      parseInt(process.env.VIDEO_HEIGHT       || '1920', 10),
+    fps:         parseInt(process.env.VIDEO_FPS          || '30',   10),
   },
 
   // Content
   content: {
-    niche: process.env.CONTENT_NICHE || 'fakta unik indonesia',
+    niche:    process.env.CONTENT_NICHE    || 'fakta unik indonesia',
     language: process.env.CONTENT_LANGUAGE || 'id',
-    country: process.env.CONTENT_COUNTRY || 'ID',
+    country:  process.env.CONTENT_COUNTRY  || 'ID',
   },
 
   // Paths
   paths: {
     output: path.resolve(process.env.OUTPUT_DIR || './output'),
-    cache: path.resolve(process.env.CACHE_DIR || './cache'),
+    cache:  path.resolve(process.env.CACHE_DIR  || './cache'),
     memory: path.resolve(process.env.MEMORY_DIR || './memory'),
-    logs: path.resolve(process.env.LOG_DIR || './logs'),
-    db: path.resolve('./data.db'),
+    logs:   path.resolve(process.env.LOG_DIR    || './logs'),
+    db:     path.resolve('./data.db'),
     python: path.resolve('./python'),
   },
 

@@ -74,6 +74,13 @@ const SCHEDULES = [
     cron: '30 16 * * *',
     agent: () => require('../agents/memory').runMemoryAgent(),
   },
+  // ── Rejection penalty — near-realtime (every minute) ────────────────────
+  // High-priority feedback: applied immediately after user taps reject button
+  {
+    name: 'MemoryPenalty',
+    cron: '* * * * *',
+    agent: () => require('../agents/memory').runMemoryPenaltyAgent(),
+  },
 
   // ── Cleanup mingguan ─────────────────────────────────────────────────────
   {

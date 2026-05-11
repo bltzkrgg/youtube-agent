@@ -18,7 +18,7 @@ const WEIGHT_DECAY = 0.95;   // Multiply weight by this each cycle if no new dat
 const MAX_RECORDS = 1000;    // Rule 42: max 1000 memory records
 const MIN_WEIGHT = 0.1;      // Floor weight to prevent topics from disappearing
 
-// ─── Main entry ──────────────────────────────────────────────────────────────
+// ─── Main entry (analytics-driven) ──────────────────────────────────────────
 
 async function runMemoryAgent() {
   const job = popJob('memory');
@@ -40,6 +40,26 @@ async function runMemoryAgent() {
       error_message: err.message,
       stack: err.stack,
       timestamp: new Date().toISOString(),
+    });
+    nackJob(job, err.message);
+  }
+}
+
+// ─── Main entry (rejection penalty) ─────────────────────────────────────────
+
+async function runMemoryPenaltyAgent() {
+  const job = popJob('memory_penalty');
+  if (!job) return;
+
+  logger.info('Memulai Memory Penalty Agent', { agent: AGENT, jobId: job.id });
+
+  try {
+    await _applyRejectionPenalty(job.payload);
+    ackJob(job.id);
+  } catch (err) {
+    logger.error('Memory Penalty Agent gagal', {
+      agent: AGENT, step: 'runMemoryPenaltyAgent',
+      error_message: err.message, stack: err.stack,
     });
     nackJob(job, err.message);
   }
@@ -155,6 +175,87 @@ async function _updateTopicWeight(stat) {
     { agent: AGENT });
 }
 
+// ─── Rejection penalty ────────────────────────────────────────────────────────
+//
+// Penalty matrix (applied multiplicatively on top of current weight):
+//   penalty_type=topic   → weight *= 0.3  (strong: avoid repeating boring topic)
+//   penalty_type=visual  → weight *= 0.4  (moderate: topic might be fine, execution was bad)
+// Floor: MIN_WEIGHT (0.1) so the topic can still recover via future analytics.
+
+async function _applyRejectionPenalty(payload) {
+  const { topic, penalty_type, penalty_factor, reason_label, video_id } = payload || {};
+  if (!topic) throw new Error('memory_penalty: topic wajib diisi');
+
+  const db      = getDb();
+  const factor  = typeof penalty_factor === 'number' ? penalty_factor : 0.4;
+  const now     = new Date().toISOString();
+
+  // Check if topic already exists in memory
+  const existing = db.prepare('SELECT * FROM memory WHERE topic = ?').get(topic);
+
+  if (existing) {
+    const newWeight = Math.max(MIN_WEIGHT, existing.weight * factor);
+    db.prepare(`
+      UPDATE memory
+      SET weight = ?, last_updated = ?, reject_count = COALESCE(reject_count, 0) + 1
+      WHERE topic = ?
+    `).run(newWeight, now, topic);
+
+    logger.info('Penalti weight diterapkan', {
+      agent: AGENT, topic,
+      reason: reason_label,
+      penalty_type,
+      before: existing.weight.toFixed(3),
+      after: newWeight.toFixed(3),
+    });
+  } else {
+    // Topic not yet in memory — insert with low initial weight
+    const initWeight = Math.max(MIN_WEIGHT, factor); // e.g. 0.3 or 0.4
+    db.prepare(`
+      INSERT OR IGNORE INTO memory
+        (topic, weight, views_avg, engagement, video_count, last_updated, created_at, reject_count)
+      VALUES (?, ?, 0, 0, 0, ?, ?, 1)
+    `).run(topic, initWeight, now, now);
+
+    logger.info('Topik baru dimasukkan dengan penalti weight', {
+      agent: AGENT, topic, initWeight, reason: reason_label,
+    });
+  }
+
+  // Also mark the visual_keyword cluster if penalty is visual-only
+  // (Research agent uses this to skip similar visual styles in future)
+  if (penalty_type === 'visual' && video_id) {
+    const scriptKeywords = _getScriptVisualKeywords(video_id);
+    if (scriptKeywords.length > 0) {
+      logger.debug('Visual keywords dari video yang ditolak dicatat', {
+        agent: AGENT, video_id, keywords: scriptKeywords,
+      });
+      // Store as low-weight separate entries so Research knows to vary visuals
+      for (const kw of scriptKeywords) {
+        const kwTopic = `[visual] ${kw}`;
+        const kwExisting = db.prepare('SELECT weight FROM memory WHERE topic = ?').get(kwTopic);
+        const kwWeight = kwExisting ? Math.max(MIN_WEIGHT, kwExisting.weight * 0.5) : MIN_WEIGHT;
+        db.prepare(`
+          INSERT INTO memory (topic, weight, views_avg, engagement, video_count, last_updated, created_at, reject_count)
+          VALUES (?, ?, 0, 0, 0, ?, ?, 1)
+          ON CONFLICT(topic) DO UPDATE SET weight = excluded.weight, last_updated = excluded.last_updated,
+            reject_count = COALESCE(reject_count, 0) + 1
+        `).run(kwTopic, kwWeight, now, now);
+      }
+    }
+  }
+}
+
+function _getScriptVisualKeywords(videoId) {
+  try {
+    const { readVideoJson } = require('../../utils/storage');
+    const script = readVideoJson(videoId, 'script.json');
+    return (script?.segments || []).map((s) => s.visual_keyword).filter(Boolean).slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
 // ─── Enforce max 1000 records ─────────────────────────────────────────────────
 
 function _enforceMaxRecords() {
@@ -198,7 +299,7 @@ Berikan analisis singkat dalam JSON:
       return axios.post(
         `${config.openrouter.baseUrl}/chat/completions`,
         {
-          model: config.openrouter.model,
+          model: config.openrouter.models.research, // ← from config, not hardcoded
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.5,
           max_tokens: 500,
@@ -225,8 +326,28 @@ Berikan analisis singkat dalam JSON:
 // ─── Get top topics for Research Agent ───────────────────────────────────────
 
 function getTopTopics(limit = 5) {
-  const all = getAllMemory();
-  return all.slice(0, limit).map((m) => m.topic);
+  const db = getDb();
+  // Exclude penalty-only records ([visual] prefixed) and floor-weight topics from recommendations
+  const rows = db.prepare(`
+    SELECT topic FROM memory
+    WHERE topic NOT LIKE '[visual]%'
+      AND weight > 0.2
+    ORDER BY weight DESC
+    LIMIT ?
+  `).all(limit);
+  return rows.map((r) => r.topic);
 }
 
-module.exports = { runMemoryAgent, getTopTopics };
+// Also expose low-weight (penalised) topics so Research prompt can explicitly avoid them
+function getAvoidTopics(limit = 10) {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT topic FROM memory
+    WHERE weight <= 0.2 AND topic NOT LIKE '[visual]%'
+    ORDER BY weight ASC
+    LIMIT ?
+  `).all(limit);
+  return rows.map((r) => r.topic);
+}
+
+module.exports = { runMemoryAgent, runMemoryPenaltyAgent, getTopTopics, getAvoidTopics };
