@@ -112,8 +112,25 @@ async function _processVoiceover(videoId, correlationId) {
 function _generateEdgeTTS(text, audioPath) {
   const scriptPath = path.join(config.paths.python, 'tts.py');
 
+  // Resolve python3 path secara dinamis agar tidak bergantung pada PATH sesi Node.js
+  let python3Bin = 'python3';
+  try {
+    python3Bin = execSync('which python3').toString().trim() || 'python3';
+  } catch {
+    logger.warn('Tidak bisa resolve path python3, pakai default "python3"', { agent: AGENT });
+  }
+
+  logger.debug('Menjalankan edge-tts', {
+    agent: AGENT,
+    python3Bin,
+    scriptPath,
+    voice: config.tts.voice,
+    rate: config.tts.rate,
+    audioPath,
+  });
+
   return new Promise((resolve, reject) => {
-    const proc = spawn('python3', [
+    const proc = spawn(python3Bin, [
       scriptPath,
       text,
       audioPath,
@@ -130,15 +147,27 @@ function _generateEdgeTTS(text, audioPath) {
     proc.on('close', (code) => {
       const result = safeParseJson(stdout.trim(), 'tts.py') || {};
       if (result.error) {
+        logger.error('edge-tts melaporkan error', { agent: AGENT, error: result.error, stderr });
         reject(new Error(result.error));
       } else if (code !== 0) {
-        reject(new Error(`edge-tts gagal (exit ${code}): ${stderr.slice(-200)}`));
+        logger.error('edge-tts exit non-zero', {
+          agent: AGENT, exitCode: code,
+          scriptPath, python3Bin,
+          stderr, // log stderr penuh untuk debug
+        });
+        reject(new Error(`edge-tts gagal (exit ${code}): ${stderr.slice(-500)}`));
       } else {
         resolve();
       }
     });
 
-    proc.on('error', (err) => reject(new Error(`Gagal spawn python3: ${err.message}`)));
+    proc.on('error', (err) => {
+      logger.error('Gagal spawn python3', {
+        agent: AGENT, python3Bin, scriptPath,
+        error_message: err.message,
+      });
+      reject(new Error(`Gagal spawn python3 (${python3Bin}): ${err.message}`));
+    });
   });
 }
 

@@ -114,10 +114,11 @@ Hanya JSON, tanpa teks lain.`;
   const res = await axios.post(
     `${config.openrouter.baseUrl}/chat/completions`,
     {
-      model: config.openrouter.model,
+      model: config.openrouter.models.metadata,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       max_tokens: 1500,
+      response_format: { type: 'json_object' }, // paksa output JSON murni
     },
     {
       headers: {
