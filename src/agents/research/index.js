@@ -300,7 +300,7 @@ Hanya JSON, tanpa teks lain.`;
         model: config.openrouter.models.research, // ← reads from config, never hardcoded
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.85,
-        max_tokens: 1200,
+        max_tokens: 2000,
         response_format: { type: 'json_object' }, // paksa output JSON murni
       },
       {
