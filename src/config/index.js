@@ -28,6 +28,7 @@ const config = {
   // Runtime mode
   dryRun: process.env.DRY_RUN === 'true',
   nodeEnv: process.env.NODE_ENV || 'development',
+  maxProductionSlots: parseInt(process.env.MAX_PRODUCTION_SLOTS) || 3,
 
   // AI — OpenRouter (per-agent model override)
   openrouter: {

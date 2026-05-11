@@ -152,6 +152,7 @@ async function _processVisual(videoId, correlationId) {
 // Batching in one call keeps API cost minimal.
 
 async function _enrichPrompts(rawPrompts) {
+  await _sleep(5000); // jeda cooldown 5 detik untuk meminimalisir error 429
   const model = config.openrouter.models.visualPrompt; // text LLM via OpenRouter
 
   const listText = rawPrompts
@@ -233,19 +234,41 @@ Return only the JSON object.`;
 
 async function _generateAndDownloadVeo(cinematicPrompt, outputPath) {
   const ai    = _getAI();
-  const model = config.google.model; // e.g. 'veo-2.0-generate-001'
+  let model = config.google.model; // e.g. 'veo-1.0'
+
+  if (!model.startsWith('models/')) {
+    model = `models/${model}`;
+  }
 
   logger.debug(`Veo submit: model=${model}`, { agent: AGENT });
 
   // 1. Submit long-running video generation operation
-  let operation = await ai.models.generateVideos({
-    model,
-    prompt: cinematicPrompt,
-    config: {
-      aspectRatio:    '9:16',   // Vertical — YouTube Shorts
-      numberOfVideos: 1,
-    },
-  });
+  let operation;
+  try {
+    operation = await ai.models.generateVideos({
+      model,
+      prompt: cinematicPrompt,
+      config: {
+        aspectRatio:    '9:16',   // Vertical — YouTube Shorts
+        numberOfVideos: 1,
+      },
+    });
+  } catch (err) {
+    if (err.status === 404 || (err.message && err.message.includes('404'))) {
+      logger.warn(`Model ${model} mengembalikan 404. Fallback ke models/veo-0.9...`, { agent: AGENT });
+      model = 'models/veo-0.9';
+      operation = await ai.models.generateVideos({
+        model,
+        prompt: cinematicPrompt,
+        config: {
+          aspectRatio:    '9:16',
+          numberOfVideos: 1,
+        },
+      });
+    } else {
+      throw err;
+    }
+  }
 
   logger.debug(`Veo operation started: ${operation.name}`, { agent: AGENT });
 

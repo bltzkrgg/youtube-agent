@@ -134,11 +134,12 @@ ALASAN TRENDING: "${research.trending_reason}"
 KEYWORDS: ${research.keywords.join(', ')}
 
 Tulis script video Shorts (45–55 detik total) dalam Bahasa Indonesia informal/Gen-Z.
+DILARANG KERAS menulis script yang jika dibaca melebihi 55 detik. Targetkan durasi total 50-55 detik untuk keamanan.
 Fokus utama: CURIOSITY GAP — buat penonton TIDAK BISA stop nonton karena merasa ketinggalan info penting.
 
 ═══ STRUKTUR WAJIB ═══
-DILARANG KERAS menggunakan tipe segmen di luar daftar: hook, buildup, climax, cliffhanger. 
-Setiap segmen WAJIB memiliki field "visual_keyword".
+Wajib menghasilkan format JSON murni dengan field visual_keyword di setiap segmen.
+DILARANG KERAS menggunakan tipe segmen di luar daftar: hook, buildup, climax, cliffhanger.
 
 1. hook (0–3 detik)
    - Maksimal 10 kata. Mulai dengan fakta mengejutkan atau pertanyaan retoris.
