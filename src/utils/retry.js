@@ -29,7 +29,7 @@ async function withRetry(fn, opts = {}) {
     } catch (err) {
       lastError = err;
 
-      if (_isNonRetryable(err)) {
+      if (!isRetryable(err)) {
         logger.error('Error tidak dapat di-retry, langsung gagal', {
           agent,
           step,
@@ -64,24 +64,38 @@ async function withRetry(fn, opts = {}) {
   throw lastError;
 }
 
-function _isNonRetryable(err) {
+function isRetryable(err) {
   if (!err) return false;
+
   const status = err.response?.status || err.status;
+  
+  // Deteksi error permanen (Billing/Precondition/Not Found)
   const nonRetryableStatuses = [400, 401, 403, 404];
 
   if (nonRetryableStatuses.includes(status)) {
-    // Gunakan satu deklarasi variabel teks untuk semua pengecekan
+    // Gabungkan pesan untuk pengecekan tunggal guna menghindari redeclaring variabel
     const errorBody = (err.message || '').toLowerCase() + 
                       JSON.stringify(err.response?.data || '').toLowerCase();
     
-    if (errorBody.includes('billing') || errorBody.includes('precondition')) return true;
-    if (status !== 400) return true;
+    // Jangan retry jika masalah Billing GCP atau status precondition gagal
+    if (errorBody.includes('billing') || errorBody.includes('precondition')) {
+      return false;
+    }
+    
+    // Status 401, 403, 404 umumnya tidak bisa dipulihkan dengan retry
+    if (status !== 400) return false;
   }
-  return false;
+
+  // Selebihnya, izinkan retry untuk network error, 429, dan 5xx
+  if (err.code && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND'].includes(err.code)) return true;
+  if (status === 429 || (status >= 500 && status <= 599)) return true;
+
+  const msg = (err.message || '').toLowerCase();
+  return msg.includes('timeout') || msg.includes('network') || msg.includes('socket');
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { withRetry, sleep, _isNonRetryable };
+module.exports = { withRetry, sleep, isRetryable };
