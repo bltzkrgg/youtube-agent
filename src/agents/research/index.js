@@ -32,19 +32,18 @@ async function runResearchAgent() {
     return;
   }
 
-  const db = require('../../utils/db').getDb();
-  const today = new Date().toISOString().split('T')[0];
-  const countObj = db.prepare(`SELECT COUNT(*) as c FROM videos WHERE date(created_at) = ?`).get(today);
-  
-  if (countObj && countObj.c >= (config.maxProductionSlots || 3)) {
-    logger.error('Slot produksi harian (MAX_PRODUCTION_SLOTS) sudah penuh', { agent: AGENT });
-    nackJob(job, 'Slot produksi harian (MAX_PRODUCTION_SLOTS) sudah penuh');
-    return;
-  }
-
   logger.info('Memulai Research Agent', { agent: AGENT, jobId: job.id });
 
   try {
+    const db = require('../../utils/db').getDb();
+    const today = new Date().toISOString().split('T')[0];
+    const countObj = db.prepare(`SELECT COUNT(*) as c FROM videos WHERE date(created_at) = ?`).get(today);
+    const dailyCount = countObj ? countObj.c : 0;
+    
+    if (dailyCount >= (config.maxProductionSlots || 3)) {
+      throw new Error('Slot produksi harian (MAX_PRODUCTION_SLOTS) sudah penuh');
+    }
+
     const result = await _processResearch(job);
     ackJob(job.id);
     logger.info('Research Agent selesai', { agent: AGENT, videoId: result.video_id });
