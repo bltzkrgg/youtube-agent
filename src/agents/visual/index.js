@@ -234,19 +234,27 @@ Return only the JSON object.`;
 
 async function _generateAndDownloadVeo(cinematicPrompt, outputPath) {
   const ai    = _getAI();
-  const model = 'models/veo-001';
+  const model = 'veo-001';
 
   logger.debug(`Veo submit: model=${model}`, { agent: AGENT });
 
   // 1. Submit long-running video generation operation
-  let operation = await ai.models.generateVideos({
-    model,
-    prompt: cinematicPrompt,
-    config: {
-      aspectRatio:    '9:16',   // Vertical — YouTube Shorts
-      numberOfVideos: 1,
-    },
-  });
+  let operation;
+  try {
+    operation = await ai.models.generateVideos({
+      model,
+      prompt: cinematicPrompt,
+      config: {
+        aspectRatio:    '9:16',   // Vertical — YouTube Shorts
+        numberOfVideos: 1,
+      },
+    });
+  } catch (err) {
+    if (err.status === 404 || (err.message && err.message.includes('404'))) {
+      logger.error('Pastikan API Key memiliki akses ke Video Generation (Veo) di Google AI Studio.', { agent: AGENT });
+    }
+    throw err;
+  }
 
   logger.debug(`Veo operation started: ${operation.name}`, { agent: AGENT });
 
