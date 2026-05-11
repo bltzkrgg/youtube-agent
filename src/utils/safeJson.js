@@ -29,22 +29,15 @@ function safeParseJson(str, context = 'unknown') {
  */
 function extractJson(str, context = 'unknown') {
   if (!str) return null;
-
-  const direct = safeParseJson(str, context);
-  if (direct !== null) return direct;
-
   const start = Math.min(
     str.indexOf('{') === -1 ? Infinity : str.indexOf('{'),
     str.indexOf('[') === -1 ? Infinity : str.indexOf('[')
   );
-  
   const end = Math.max(
     str.lastIndexOf('}') === -1 ? -1 : str.lastIndexOf('}'),
     str.lastIndexOf(']') === -1 ? -1 : str.lastIndexOf(']')
   );
-
   if (start === Infinity || end === -1 || end < start) return null;
-
   const jsonPart = str.slice(start, end + 1);
   return safeParseJson(jsonPart, context);
 }
