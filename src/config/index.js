@@ -8,6 +8,7 @@ const REQUIRED = [
   'OPENROUTER_API_KEY',
   'TELEGRAM_BOT_TOKEN',
   'TELEGRAM_CHAT_ID',
+  'YOUTUBE_API_KEY',
 ];
 
 if (process.env.DRY_RUN !== 'true') {

@@ -136,7 +136,7 @@ async function _fetchTrending() {
         part: 'snippet,statistics',
         chart: 'mostPopular',
         regionCode: 'ID',
-        videoCategoryId: '27', // Education — best fit for "fakta unik"
+        // videoCategoryId: '27', // Education — dinonaktifkan: sering 404 di region ID
         maxResults: MAX_YT_RESULTS,
         key: config.youtube.apiKey,
       },
