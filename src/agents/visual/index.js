@@ -1,9 +1,10 @@
 'use strict';
 
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const axios = require('axios');
+
+const { GoogleGenAI } = require('@google/genai');
 
 const config = require('../../config');
 const logger = require('../../utils/logger');
@@ -16,11 +17,19 @@ const { validate, VisualOutput } = require('../../schemas');
 
 const AGENT = 'VisualAgent';
 
-const KLING_BASE_URL   = 'https://api.klingai.com';
-const POLL_INTERVAL_MS = 10_000; // 10s between polls
-const POLL_MAX_ATTEMPTS = 120;   // max 20 minutes per clip
+const POLL_INTERVAL_MS  = 15_000; // 15s between polls (Veo is slower than text models)
+const POLL_MAX_ATTEMPTS = 240;    // max 60 minutes per clip
 
-// ─── Main entry ──────────────────────────────────────────────────────────────
+// Lazy-initialised Google AI client (created once, reused across calls)
+let _ai = null;
+function _getAI() {
+  if (!_ai) {
+    _ai = new GoogleGenAI({ apiKey: config.google.apiKey });
+  }
+  return _ai;
+}
+
+// ─── Main entry ───────────────────────────────────────────────────────────────
 
 async function runVisualAgent() {
   const job = popJob('visual');
@@ -29,7 +38,7 @@ async function runVisualAgent() {
     return;
   }
 
-  logger.info('Memulai Visual Agent (KlingAI + Prompt Engineer)', { agent: AGENT, jobId: job.id });
+  logger.info('Memulai Visual Agent (Google Veo + Prompt Engineer)', { agent: AGENT, jobId: job.id });
 
   try {
     const { video_id, correlation_id } = job.payload;
@@ -54,7 +63,7 @@ async function runVisualAgent() {
   }
 }
 
-// ─── Core processing ─────────────────────────────────────────────────────────
+// ─── Core processing ──────────────────────────────────────────────────────────
 
 async function _processVisual(videoId, correlationId) {
   const script    = readVideoJson(videoId, 'script.json');
@@ -67,7 +76,7 @@ async function _processVisual(videoId, correlationId) {
 
   if (config.dryRun) return _mockVisual(videoId, correlationId, script, footageDir);
 
-  // ── Step 1: Prompt Engineer — enrich all raw prompts in one LLM call ────────
+  // ── Step 1: Prompt Engineer — enrich all raw prompts in one LLM call ─────────
   const rawPrompts = script.segments.flatMap((seg) =>
     (seg.visual_prompts?.length ? seg.visual_prompts : [seg.visual_keyword])
       .map((p, clipIdx) => ({ segIndex: seg.index, clipIdx, raw: p }))
@@ -80,11 +89,11 @@ async function _processVisual(videoId, correlationId) {
     { maxRetry: config.maxRetry, agent: AGENT, step: 'promptEngineer' }
   );
 
-  // ── Step 2: Generate each clip with KlingAI — sequential per-segment ────────
+  // ── Step 2: Generate each clip with Google Veo — sequential per-segment ──────
   const visualSegments = [];
 
   for (const seg of script.segments) {
-    const voiceSeg  = voiceover.segments.find((v) => v.index === seg.index);
+    const voiceSeg    = voiceover.segments.find((v) => v.index === seg.index);
     const segDuration = voiceSeg?.duration_seconds || seg.duration_hint_sec;
 
     const rawList = seg.visual_prompts?.length
@@ -99,13 +108,13 @@ async function _processVisual(videoId, correlationId) {
       const outputPath      = path.join(footageDir, `seg_${seg.index}_clip_${clipIdx}.mp4`);
 
       logger.info(
-        `KlingAI generate: seg ${seg.index} clip ${clipIdx + 1}/${rawList.length}`,
+        `Veo generate: seg ${seg.index} clip ${clipIdx + 1}/${rawList.length}`,
         { agent: AGENT, prompt: cinematicPrompt.slice(0, 80) }
       );
 
       await withRetry(
-        () => _generateAndDownload(cinematicPrompt, outputPath),
-        { maxRetry: config.maxRetry, agent: AGENT, step: `kling_seg${seg.index}_clip${clipIdx}` }
+        () => _generateAndDownloadVeo(cinematicPrompt, outputPath),
+        { maxRetry: config.maxRetry, agent: AGENT, step: `veo_seg${seg.index}_clip${clipIdx}` }
       );
 
       footagePaths.push(outputPath);
@@ -114,12 +123,12 @@ async function _processVisual(videoId, correlationId) {
     visualSegments.push({
       index:            seg.index,
       keyword:          seg.visual_keyword,
-      footage_paths:    footagePaths,    // ← array, one path per clip
+      footage_paths:    footagePaths,   // ← array, one path per clip
       duration_seconds: segDuration,
     });
   }
 
-  // ── Step 3: Validate & persist ──────────────────────────────────────────────
+  // ── Step 3: Validate & persist ───────────────────────────────────────────────
   const output = {
     video_id:       videoId,
     correlation_id: correlationId,
@@ -135,50 +144,61 @@ async function _processVisual(videoId, correlationId) {
   return data;
 }
 
-// ─── Prompt Engineer (internal LLM) ─────────────────────────────────────────
+// ─── Prompt Engineer (internal LLM via OpenRouter) ───────────────────────────
 //
 // Receives a flat list of {segIndex, clipIdx, raw} objects and returns a map
-// keyed by "${segIndex}_${clipIdx}" → enriched cinematic prompt string.
+// keyed by "${segIndex}_${clipIdx}" → enriched prompt string optimised for Veo.
+// Uses system+user message split for better instruction-following.
 // Batching in one call keeps API cost minimal.
 
 async function _enrichPrompts(rawPrompts) {
-  const model = config.openrouter.models.visualPrompt; // ← from config, never hardcoded
+  const model = config.openrouter.models.visualPrompt; // text LLM via OpenRouter
 
   const listText = rawPrompts
-    .map((p, i) => `${i}. [key:${p.segIndex}_${p.clipIdx}] ${p.raw}`)
+    .map((p) => `[key:${p.segIndex}_${p.clipIdx}] ${p.raw}`)
     .join('\n');
 
-  const prompt = `You are a cinematic AI video prompt engineer.
-Transform each short description below into a rich, detailed AI video generation prompt.
+  // ── System: persona & hard rules ──────────────────────────────────────────
+  const systemMessage = `You are an expert prompt engineer specialising in Google Veo text-to-video generation.
+Your job is to transform short scene descriptions into highly effective Veo prompts.
 
-Requirements for every prompt:
-- Style: cinematic, dramatic, photorealistic
-- Resolution hint: 4K, ultra-detailed
-- Lighting: specify (e.g. rim light, volumetric light, dramatic shadows, golden hour)
-- Mood: moody, atmospheric, emotionally charged
-- Camera: specify angle and movement (e.g. slow push-in, low angle, bird's eye, rack focus)
-- Subject: describe clearly with texture and color details
-- Negative elements to avoid: no text, no watermark, no cartoon, no blurry
-- Keep it under 120 words per prompt
+Veo prompt best-practices you MUST follow:
+1. Structure every prompt as: [Subject + action] → [Environment/background] → [Camera motion] → [Lighting] → [Style/mood]
+2. Camera motion MUST be explicit — Veo responds well to: "slow push-in", "smooth tracking shot", "static wide shot", "low-angle upward tilt", "aerial descent", "rack focus from foreground to background".
+3. Frame for VERTICAL 9:16 (YouTube Shorts). Prefer close-ups, portrait compositions, tall subject framing.
+4. Lighting must be concrete: "golden hour backlight", "dramatic single-source rim light", "overcast diffused light", "neon-lit night scene", "harsh midday sun casting long shadows".
+5. Keep each prompt ≤ 100 words. Veo performs best with dense but concise descriptions — avoid filler words.
+6. Temporal motion: describe what MOVES and HOW (e.g. "leaves swirl in slow-motion", "crowd surges forward", "lava flows downward").
+7. Never include: text, subtitles, watermarks, logos, UI, animated/cartoon elements, blurry footage.
+8. Style anchor: "photorealistic, cinematic 4K, shallow depth of field" unless the scene requires otherwise.
 
-Input prompts:
-${listText}
-
-Respond ONLY with valid JSON — no markdown, no explanation:
+Output format — respond ONLY with valid JSON, no markdown fences, no extra keys:
 {
   "prompts": {
-    "segIndex_clipIdx": "enriched cinematic prompt here",
+    "segIndex_clipIdx": "enriched Veo prompt",
     ...
   }
 }`;
+
+  // ── User: the actual batch to enrich ──────────────────────────────────────
+  const userMessage = `Enrich the following ${rawPrompts.length} scene description(s) into Veo-optimised prompts following your system instructions exactly.
+
+Input:
+${listText}
+
+Return only the JSON object.`;
 
   const res = await axios.post(
     `${config.openrouter.baseUrl}/chat/completions`,
     {
       model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.7,
-      max_tokens: 2000,
+      messages: [
+        { role: 'system', content: systemMessage },
+        { role: 'user',   content: userMessage   },
+      ],
+      temperature:      0.65, // slightly lower for more deterministic structured JSON
+      max_tokens:       2048,
+      response_format:  { type: 'json_object' }, // enforce JSON output where supported
     },
     {
       headers: {
@@ -187,7 +207,7 @@ Respond ONLY with valid JSON — no markdown, no explanation:
         'HTTP-Referer': 'https://youtube-agent.local',
         'X-Title': 'YouTube Shorts Agent',
       },
-      timeout: 45000,
+      timeout: 60000, // give more room for larger batches
     }
   );
 
@@ -197,115 +217,93 @@ Respond ONLY with valid JSON — no markdown, no explanation:
   const parsed = extractJson(raw, `${AGENT}:enrichPrompts`);
   if (!parsed?.prompts) {
     logger.warn('Prompt Engineer gagal parse — pakai raw prompts sebagai fallback', { agent: AGENT });
-    // Return identity map so downstream still works
     return Object.fromEntries(rawPrompts.map((p) => [`${p.segIndex}_${p.clipIdx}`, p.raw]));
   }
 
-  return parsed.prompts;
-}
-
-// ─── KlingAI: generate → poll → download ─────────────────────────────────────
-
-async function _generateAndDownload(cinematicPrompt, outputPath) {
-  const taskId = await _submitKlingTask(cinematicPrompt);
-  logger.debug(`KlingAI task submitted: ${taskId}`, { agent: AGENT });
-
-  const videoUrl = await _pollKlingTask(taskId);
-  await _downloadVideo(videoUrl, outputPath);
-
-  logger.info(`KlingAI clip saved → ${path.basename(outputPath)}`, { agent: AGENT });
-}
-
-async function _submitKlingTask(cinematicPrompt) {
-  const res = await axios.post(
-    `${KLING_BASE_URL}/v1/videos/text2video`,
-    {
-      model:           config.kling.model,
-      prompt:          cinematicPrompt,
-      negative_prompt: 'text, subtitles, watermark, logo, blurry, low quality, cartoon, animation, nsfw',
-      cfg_scale:       0.5,
-      mode:            config.kling.mode,
-      aspect_ratio:    '9:16',
-      duration:        config.kling.duration,
-    },
-    {
-      headers: {
-        Authorization:  `Bearer ${_generateToken()}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 30000,
-    }
-  );
-
-  if (res.data?.code !== 0) {
-    throw new Error(`KlingAI submit error: ${res.data?.message || JSON.stringify(res.data)}`);
+  // Validate all expected keys are present; fill missing ones from raw
+  const result = {};
+  for (const p of rawPrompts) {
+    const key = `${p.segIndex}_${p.clipIdx}`;
+    result[key] = parsed.prompts[key] || p.raw;
   }
-
-  const taskId = res.data?.data?.task_id;
-  if (!taskId) throw new Error('KlingAI tidak mengembalikan task_id');
-  return taskId;
+  return result;
 }
 
-async function _pollKlingTask(taskId) {
+// ─── Google Veo: generate → poll → download ───────────────────────────────────
+
+async function _generateAndDownloadVeo(cinematicPrompt, outputPath) {
+  const ai    = _getAI();
+  const model = config.google.model; // e.g. 'veo-2.0-generate-001'
+
+  logger.debug(`Veo submit: model=${model}`, { agent: AGENT });
+
+  // 1. Submit long-running video generation operation
+  let operation = await ai.models.generateVideos({
+    model,
+    prompt: cinematicPrompt,
+    config: {
+      aspectRatio:    '9:16',   // Vertical — YouTube Shorts
+      numberOfVideos: 1,
+    },
+  });
+
+  logger.debug(`Veo operation started: ${operation.name}`, { agent: AGENT });
+
+  // 2. Poll until done
   for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
     await _sleep(POLL_INTERVAL_MS);
+    operation = await ai.operations.getVideosOperation({ operation });
 
-    const res = await axios.get(
-      `${KLING_BASE_URL}/v1/videos/text2video/${taskId}`,
-      {
-        headers: { Authorization: `Bearer ${_generateToken()}` },
-        timeout: 15000,
-      }
+    logger.debug(
+      `Veo poll [${operation.name}] attempt ${attempt + 1}: done=${operation.done}`,
+      { agent: AGENT }
     );
 
-    const taskData = res.data?.data;
-    const status   = taskData?.task_status;
-
-    logger.debug(`KlingAI poll [${taskId}] attempt ${attempt + 1}: ${status}`, { agent: AGENT });
-
-    if (status === 'succeed') {
-      const videoUrl = taskData?.task_result?.videos?.[0]?.url;
-      if (!videoUrl) throw new Error('KlingAI succeed tapi tidak ada video URL');
-      return videoUrl;
-    }
-
-    if (status === 'failed') {
-      throw new Error(`KlingAI task gagal: ${taskData?.task_status_msg || 'unknown'}`);
-    }
-    // 'submitted' | 'processing' → keep polling
+    if (operation.done) break;
   }
 
-  throw new Error(`KlingAI task ${taskId} timeout setelah ${POLL_MAX_ATTEMPTS} polls`);
+  if (!operation.done) {
+    throw new Error(`Veo operation timeout setelah ${POLL_MAX_ATTEMPTS} polls`);
+  }
+
+  if (operation.error) {
+    throw new Error(`Veo operation gagal: ${JSON.stringify(operation.error)}`);
+  }
+
+  // 3. Download the generated video
+  const generatedVideos = operation.response?.generatedVideos;
+  if (!generatedVideos?.length) {
+    throw new Error('Veo selesai tapi tidak ada video yang dihasilkan');
+  }
+
+  const videoUri = generatedVideos[0].video?.uri;
+  if (!videoUri) throw new Error('Veo tidak mengembalikan video URI');
+
+  await _downloadVideo(videoUri, outputPath);
+  logger.info(`Veo clip saved → ${path.basename(outputPath)}`, { agent: AGENT });
 }
 
 async function _downloadVideo(url, outputPath) {
-  const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 120_000 });
+  // Append API key to authenticated Google storage URIs
+  const downloadUrl = url.includes('?')
+    ? `${url}&key=${config.google.apiKey}`
+    : `${url}?key=${config.google.apiKey}`;
+
+  const res = await axios.get(downloadUrl, { responseType: 'arraybuffer', timeout: 120_000 });
   fs.writeFileSync(outputPath, Buffer.from(res.data));
 }
 
-// ─── KlingAI JWT (HS256) ─────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function _generateToken() {
-  const now     = Math.floor(Date.now() / 1000);
-  const header  = _b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = _b64url(JSON.stringify({ iss: config.kling.accessKey, exp: now + 1800, nbf: now - 5 }));
-  const sig     = crypto
-    .createHmac('sha256', config.kling.secretKey)
-    .update(`${header}.${payload}`)
-    .digest('base64url');
-  return `${header}.${payload}.${sig}`;
-}
+function _sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-function _b64url(str) { return Buffer.from(str).toString('base64url'); }
-function _sleep(ms)   { return new Promise((r) => setTimeout(r, ms)); }
-
-// ─── Mock (DRY_RUN) ──────────────────────────────────────────────────────────
+// ─── Mock (DRY_RUN) ───────────────────────────────────────────────────────────
 
 function _mockVisual(videoId, correlationId, script, footageDir) {
   logger.info('[DRY_RUN] Menggunakan data mock untuk Visual', { agent: AGENT });
 
   const segments = script.segments.map((seg) => {
-    const clipCount   = seg.visual_prompts?.length || 1;
+    const clipCount    = seg.visual_prompts?.length || 1;
     const footagePaths = Array.from({ length: clipCount }, (_, i) => {
       const p = path.join(footageDir, `seg_${seg.index}_clip_${i}.mp4`);
       fs.writeFileSync(p, ''); // placeholder file

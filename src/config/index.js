@@ -11,7 +11,7 @@ const REQUIRED = [
 ];
 
 if (process.env.DRY_RUN !== 'true') {
-  REQUIRED.push('KLING_ACCESS_KEY', 'KLING_SECRET_KEY');
+  REQUIRED.push('GOOGLE_API_KEY');
 }
 
 for (const key of REQUIRED) {
@@ -51,13 +51,10 @@ const config = {
     rate:  process.env.TTS_RATE  || '+0%',
   },
 
-  // KlingAI (AI video generation)
-  kling: {
-    accessKey: process.env.KLING_ACCESS_KEY,
-    secretKey:  process.env.KLING_SECRET_KEY,
-    model:      process.env.KLING_MODEL    || 'kling-v1-6',
-    mode:       process.env.KLING_MODE     || 'std',
-    duration:   process.env.KLING_DURATION || '5',
+  // Google AI Studio (AI video generation)
+  google: {
+    apiKey: process.env.GOOGLE_API_KEY,
+    model:  process.env.GOOGLE_VIDEO_MODEL || 'veo-1.0',
   },
 
   // Telegram
@@ -72,7 +69,7 @@ const config = {
   // Timeouts (ms)
   timeouts: {
     research: parseInt(process.env.TIMEOUT_RESEARCH || '300000',  10),
-    visual:   parseInt(process.env.TIMEOUT_VISUAL   || '3600000', 10), // 1h — KlingAI can be slow
+    visual:   parseInt(process.env.TIMEOUT_VISUAL   || '3600000', 10), // 1h — Veo can be slow
     clip:     parseInt(process.env.TIMEOUT_CLIP     || '1800000', 10),
     upload:   parseInt(process.env.TIMEOUT_UPLOAD   || '600000',  10),
     default:  parseInt(process.env.TIMEOUT_DEFAULT  || '1800000', 10),

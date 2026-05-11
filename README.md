@@ -23,8 +23,8 @@ Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Sh
   └────┬────┘
        │
 ┌──────▼──────┐
-│   Visual    │  Prompt Engineer LLM → cinematic 4K prompt
-│             │  → KlingAI text-to-video (multi-klip per segmen)
+│   Visual    │  Prompt Engineer LLM → Veo-optimised prompt
+│             │  → Google Veo text-to-video (multi-klip per segmen)
 └──────┬──────┘
        │
 ┌──────▼──────┐
@@ -61,7 +61,7 @@ Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Sh
 | LLM — metadata | `METADATA_MODEL` via OpenRouter |
 | LLM — visual prompt engineer | `VISUAL_PROMPT_MODEL` via OpenRouter |
 | Text-to-speech | edge-tts (Microsoft, gratis) |
-| AI video generation | KlingAI text-to-video (multi-klip) |
+| AI video generation | Google AI Studio — Veo text-to-video (multi-klip) |
 | Audio mixing | FFmpeg amix (voiceover + SFX + BGM) |
 | Review & delivery | Telegram Bot |
 | Adaptive memory | SQLite weight system + rejection feedback |
@@ -74,7 +74,7 @@ Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Sh
 | Target | 2 | ~$3.00 |
 | Agresif | 3 | ~$4.50 |
 
-> TTS gratis via edge-tts. Biaya utama: **OpenRouter** (4 LLM calls/video) + **KlingAI** (~5-15 klip/video) + **YouTube Data API** (gratis s.d. 10k units/hari).
+> TTS gratis via edge-tts. Biaya utama: **OpenRouter** (4 LLM calls/video) + **Google AI Studio** (~5-15 klip/video via Veo) + **YouTube Data API** (gratis s.d. 10k units/hari).
 
 ---
 
@@ -85,7 +85,7 @@ Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Sh
 - Node.js v20+
 - Python 3.11+
 - FFmpeg (wajib ada di PATH)
-- Akun: [OpenRouter](https://openrouter.ai) · [KlingAI](https://klingai.com) · [Google Cloud](https://console.cloud.google.com) · [Telegram BotFather](https://t.me/BotFather)
+- Akun: [OpenRouter](https://openrouter.ai) · [Google AI Studio](https://aistudio.google.com) · [Google Cloud](https://console.cloud.google.com) · [Telegram BotFather](https://t.me/BotFather)
 
 ### 1. Clone & Install
 
@@ -115,8 +115,7 @@ nano .env   # atau editor favoritmu
 |---|---|---|
 | `OPENROUTER_API_KEY` | LLM routing untuk semua agent | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | `YOUTUBE_API_KEY` | YouTube Data API v3 untuk riset trending | [console.cloud.google.com](https://console.cloud.google.com) → Enable **YouTube Data API v3** |
-| `KLING_ACCESS_KEY` | KlingAI video generation | [klingai.com](https://klingai.com) → Developer → API Keys |
-| `KLING_SECRET_KEY` | KlingAI secret | sama seperti di atas |
+| `GOOGLE_API_KEY` | Google AI Studio — Veo video generation | [aistudio.google.com](https://aistudio.google.com) → **Get API Key** |
 | `TELEGRAM_BOT_TOKEN` | Bot review video | [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | ID chat tujuan | kirim pesan ke [@userinfobot](https://t.me/userinfobot) |
 
@@ -139,8 +138,9 @@ VISUAL_PROMPT_MODEL=google/gemini-flash-1.5    # enrichment prompt sinematik
 BG_MUSIC_PATH=./assets/bg_music.mp3
 ```
 
-### 3. Setup Google Cloud (YouTube API)
+### 3. Setup Google Cloud & Google AI Studio
 
+#### YouTube Data API v3
 1. Buka [Google Cloud Console](https://console.cloud.google.com)
 2. Buat project baru → **APIs & Services** → **Enable APIs**
 3. Cari dan aktifkan **YouTube Data API v3**
@@ -148,6 +148,14 @@ BG_MUSIC_PATH=./assets/bg_music.mp3
 5. Salin ke `YOUTUBE_API_KEY` di `.env`
 
 > Kuota default: **10.000 units/hari** (gratis). Pipeline ini menggunakan ~100 units/hari — sangat aman.
+
+#### Google AI Studio (Veo)
+1. Buka [aistudio.google.com](https://aistudio.google.com)
+2. Klik **Get API Key** → **Create API key**
+3. Salin ke `GOOGLE_API_KEY` di `.env`
+4. Set `GOOGLE_VIDEO_MODEL=veo-2.0-generate-001` (atau model Veo lain yang tersedia di akunmu)
+
+> Pastikan akun Google AI Studio sudah diaktifkan untuk **video generation** (Veo). Cek ketersediaan model di [ai.google.dev/api/generate-content](https://ai.google.dev/api/generate-content#v1beta.models).
 
 ### 4. Jalankan
 
