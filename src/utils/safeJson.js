@@ -43,14 +43,25 @@ function extractJson(str, context = 'unknown') {
   const fromStripped = safeParseJson(stripped, context);
   if (fromStripped !== null) return fromStripped;
 
-  // Find first { or [ and try from there
-  const start = Math.min(
-    str.indexOf('{') === -1 ? Infinity : str.indexOf('{'),
-    str.indexOf('[') === -1 ? Infinity : str.indexOf('[')
-  );
-  if (start === Infinity) return null;
+  // Find first { or [ and last matching } or ] to extract clean JSON boundaries
+  const firstCurly  = str.indexOf('{');
+  const firstSquare = str.indexOf('[');
 
-  const slice = str.slice(start);
+  let openChar, closeChar, start;
+  if (firstCurly === -1 && firstSquare === -1) return null;
+
+  if (firstCurly === -1 || (firstSquare !== -1 && firstSquare < firstCurly)) {
+    start = firstSquare;
+    openChar = '['; closeChar = ']';
+  } else {
+    start = firstCurly;
+    openChar = '{'; closeChar = '}';
+  }
+
+  const end = str.lastIndexOf(closeChar);
+  if (end === -1 || end < start) return null;
+
+  const slice = str.slice(start, end + 1);
   return safeParseJson(slice, context);
 }
 

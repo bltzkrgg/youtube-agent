@@ -199,6 +199,7 @@ Untuk setiap segmen, buat visual_prompts: array string berisi prompt AI video/im
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.88,
       max_tokens: 2500,
+      response_format: { type: 'json_object' }, // paksa output JSON murni
     },
     {
       headers: {

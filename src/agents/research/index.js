@@ -301,6 +301,7 @@ Hanya JSON, tanpa teks lain.`;
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.85,
         max_tokens: 1200,
+        response_format: { type: 'json_object' }, // paksa output JSON murni
       },
       {
         headers: {
