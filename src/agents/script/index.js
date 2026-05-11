@@ -137,7 +137,7 @@ Tulis script video Shorts (45–55 detik total) dalam Bahasa Indonesia informal/
 Fokus utama: CURIOSITY GAP — buat penonton TIDAK BISA stop nonton karena merasa ketinggalan info penting.
 
 ═══ STRUKTUR WAJIB ═══
-⚠️ DILARANG KERAS menciptakan tipe segmen baru. Gunakan HANYA: hook, buildup, climax, atau cliffhanger.
+Output WAJIB JSON murni. DILARANG menggunakan tipe segmen di luar: hook, buildup, climax, cliffhanger. Field visual_keyword bersifat WAJIB.
 
 1. hook (0–3 detik)
    - Maksimal 10 kata. Mulai dengan fakta mengejutkan atau pertanyaan retoris.

@@ -29,20 +29,6 @@ function safeParseJson(str, context = 'unknown') {
  */
 function extractJson(str, context = 'unknown') {
   if (!str) return null;
-
-  // Try direct parse first
-  const direct = safeParseJson(str, context);
-  if (direct !== null) return direct;
-
-  // Strip markdown code blocks
-  const stripped = str
-    .replace(/```json\s*/gi, '')
-    .replace(/```\s*/g, '')
-    .trim();
-
-  const fromStripped = safeParseJson(stripped, context);
-  if (fromStripped !== null) return fromStripped;
-
   const start = Math.min(
     str.indexOf('{') === -1 ? Infinity : str.indexOf('{'),
     str.indexOf('[') === -1 ? Infinity : str.indexOf('[')
@@ -51,10 +37,8 @@ function extractJson(str, context = 'unknown') {
     str.lastIndexOf('}') === -1 ? -1 : str.lastIndexOf('}'),
     str.lastIndexOf(']') === -1 ? -1 : str.lastIndexOf(']')
   );
-
   if (start === Infinity || end === -1 || end < start) return null;
-  const jsonPart = str.slice(start, end + 1);
-  return safeParseJson(jsonPart, context);
+  return safeParseJson(str.slice(start, end + 1), context);
 }
 
 /**

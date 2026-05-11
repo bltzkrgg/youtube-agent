@@ -70,14 +70,11 @@ function _isNonRetryable(err) {
   const nonRetryableStatuses = [400, 401, 403, 404];
 
   if (nonRetryableStatuses.includes(status)) {
-    const errorText = (err.message || '').toLowerCase();
-    const responseData = JSON.stringify(err.response?.data || '').toLowerCase();
+    // Gunakan satu deklarasi variabel teks untuk semua pengecekan
+    const errorBody = (err.message || '').toLowerCase() + 
+                      JSON.stringify(err.response?.data || '').toLowerCase();
     
-    // Blokir retry jika terdeteksi masalah billing atau persyaratan akun
-    if (errorText.includes('billing') || responseData.includes('billing') || errorText.includes('precondition')) {
-      return true;
-    }
-    // Status 401, 403, 404 umumnya bersifat permanen
+    if (errorBody.includes('billing') || errorBody.includes('precondition')) return true;
     if (status !== 400) return true;
   }
   return false;
