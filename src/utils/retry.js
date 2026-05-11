@@ -68,6 +68,13 @@ async function withRetry(fn, opts = {}) {
  * Determine if an error is retryable.
  */
 function isRetryable(err) {
+  const msg = (err.message || '').toLowerCase();
+
+  // Fail-fast untuk error konfigurasi akun/permanen yang tidak akan beres dengan di-retry
+  if (err.code === 'FAILED_PRECONDITION' || msg.includes('billing')) {
+    return false;
+  }
+
   // Network errors
   if (err.code && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(err.code)) {
     return true;

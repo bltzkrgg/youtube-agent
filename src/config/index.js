@@ -53,6 +53,7 @@ const config = {
   },
 
   // Google AI Studio (AI video generation)
+  // Catatan: veo-2.0 mewajibkan akun GCP dengan billing aktif. Gunakan veo-1.0 untuk tier gratis.
   google: {
     apiKey: process.env.GOOGLE_API_KEY,
     model:  process.env.GOOGLE_VIDEO_MODEL || 'veo-1.0',
