@@ -29,7 +29,7 @@ async function withRetry(fn, opts = {}) {
     } catch (err) {
       lastError = err;
 
-      if (!isRetryable(err)) {
+      if (_isNonRetryable(err)) {
         logger.error('Error tidak dapat di-retry, langsung gagal', {
           agent,
           step,
@@ -64,34 +64,22 @@ async function withRetry(fn, opts = {}) {
   throw lastError;
 }
 
-/**
- * Determine if an error is retryable.
- */
-function isRetryable(err) {
-  const msg = (err.message || '').toLowerCase();
+function _isNonRetryable(err) {
+  if (!err) return false;
+  const status = err.response?.status || err.status;
+  const nonRetryableStatuses = [400, 401, 403, 404];
 
-  // Fail-fast untuk error konfigurasi akun/permanen yang tidak akan beres dengan di-retry
-  if (err.code === 'FAILED_PRECONDITION' || msg.includes('billing')) {
-    return false;
+  if (nonRetryableStatuses.includes(status)) {
+    const errorText = (err.message || '').toLowerCase();
+    const responseData = JSON.stringify(err.response?.data || '').toLowerCase();
+    
+    // Blokir retry jika terdeteksi masalah billing atau persyaratan akun
+    if (errorText.includes('billing') || responseData.includes('billing') || errorText.includes('precondition')) {
+      return true;
+    }
+    // Status 401, 403, 404 umumnya bersifat permanen
+    if (status !== 400) return true;
   }
-
-  // Network errors
-  if (err.code && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(err.code)) {
-    return true;
-  }
-
-  // Axios HTTP errors
-  const status = err.response?.status;
-  if (status) {
-    return status === 429 || (status >= 500 && status <= 599);
-  }
-
-  // Generic "network" or "timeout" message
-  const msg = (err.message || '').toLowerCase();
-  if (msg.includes('timeout') || msg.includes('network') || msg.includes('socket')) {
-    return true;
-  }
-
   return false;
 }
 
@@ -99,4 +87,4 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { withRetry, sleep, isRetryable };
+module.exports = { withRetry, sleep, _isNonRetryable };
