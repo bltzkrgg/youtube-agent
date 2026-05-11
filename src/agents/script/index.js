@@ -137,6 +137,8 @@ Tulis script video Shorts (45–55 detik total) dalam Bahasa Indonesia informal/
 Fokus utama: CURIOSITY GAP — buat penonton TIDAK BISA stop nonton karena merasa ketinggalan info penting.
 
 ═══ STRUKTUR WAJIB ═══
+⚠️ DILARANG KERAS menciptakan tipe segmen baru. Gunakan HANYA: hook, buildup, climax, atau cliffhanger.
+
 1. hook (0–3 detik)
    - Maksimal 10 kata. Mulai dengan fakta mengejutkan atau pertanyaan retoris.
    - Contoh tone: "Gue baru tau ini dan langsung deg-degan...", "Ini yang paling gue takutin dari..."
@@ -146,6 +148,7 @@ Fokus utama: CURIOSITY GAP — buat penonton TIDAK BISA stop nonton karena meras
    - Bangun tensi perlahan. Setiap kalimat harus lebih mengejutkan dari sebelumnya.
    - Gunakan jeda dramatis: "Dan yang lebih gila lagi...", "Tapi tunggu dulu..."
    - Drop fakta yang terasa tidak masuk akal tapi nyata.
+   - TIPE HARUS "buildup" — BUKAN "buildup_dramatic", "buildup_2", atau varian apapun.
 
 3. climax (20–40 detik)
    - Momen puncak reveal. Tulis seolah-olah rahasia besar baru dibuka.
@@ -173,6 +176,11 @@ Untuk setiap segmen, buat visual_prompts: array string berisi prompt AI video/im
 - Contoh: ["extreme close-up of sleeping human face, dark dramatic lighting, slow zoom in", "brain neurons firing rapidly, dark background, cinematic blue glow"]
 
 ═══ FORMAT JSON (hanya JSON, tanpa teks lain) ═══
+ATURAN KRITIS:
+- "type" HANYA boleh berisi salah satu dari: "hook", "buildup", "climax", "cliffhanger"
+- "visual_keyword" WAJIB ADA di setiap segmen tanpa pengecualian (string bahasa Inggris, fallback untuk stock footage)
+- Jangan tambahkan field diluar schema di bawah
+
 {
   "hook_line": "kalimat hook maks 10 kata",
   "segments": [
@@ -180,7 +188,7 @@ Untuk setiap segmen, buat visual_prompts: array string berisi prompt AI video/im
       "index": 0,
       "type": "hook",
       "text": "narasi yang akan dibacakan TTS",
-      "visual_keyword": "english fallback keyword for stock footage",
+      "visual_keyword": "WAJIB: english keyword for stock footage (contoh: dark room person shocked)",
       "visual_prompts": ["AI video prompt 1", "AI video prompt 2"],
       "sfx": "whoosh",
       "duration_hint_sec": 3
