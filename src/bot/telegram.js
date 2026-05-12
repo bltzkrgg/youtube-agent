@@ -147,11 +147,12 @@ async function _handleCallback(query) {
 
   await bot.answerCallbackQuery(query.id);
 
-  const parts = (data || '').split('|');
+  const separator = data.includes(':') ? ':' : '|';
+  const parts = (data || '').split(separator);
   const action = parts[0];
-  const videoId = parts[1];
+  const videoId = parts[1]; // for old callbacks, parts[1] is videoId. for res_ok, it's jobId.
 
-  if (!action || !videoId) return;
+  if (!action || !parts[1]) return;
 
   switch (action) {
     case 'approve':
@@ -172,20 +173,20 @@ async function _handleCallback(query) {
     case 'view_desc':
       await _handleViewDesc(chatId, videoId);
       break;
-    case 'c_scr':
+    case 'res_ok':
       await _handleConfirmScript(chatId, parts[1]);
       break;
-    case 'x_scr':
+    case 'res_no':
       await _handleCancelScript(chatId, parts[1]);
       break;
-    case 'trigger_research':
+    case 'menu_research':
       await bot.sendMessage(chatId, '🔄 Memulai pipeline research\\.\\.\\.', { parse_mode: 'MarkdownV2' });
       const { triggerResearch } = require('../agents/research');
       triggerResearch().catch((e) => {
         bot.sendMessage(chatId, `❌ Error: ${_escape(e.message)}`, { parse_mode: 'MarkdownV2' });
       });
       break;
-    case 'check_queue':
+    case 'menu_queue':
       await _sendQueueStats(chatId);
       break;
     default:
@@ -503,8 +504,8 @@ async function _handleDocumentUpload(msg) {
 }
 
 async function _handleClearQueue(chatId) {
-  const { hardResetDatabase } = require('../utils/db');
-  hardResetDatabase();
+  const { clearAllData } = require('../utils/db');
+  clearAllData();
   const outputDir = config.paths.output;
   if (fs.existsSync(outputDir)) {
     const items = fs.readdirSync(outputDir);
@@ -519,15 +520,14 @@ async function _handleClearQueue(chatId) {
 // ─── Info messages ────────────────────────────────────────────────────────────
 
 async function _sendHelp(chatId) {
-  const msg = `🤖 *YouTube Shorts Agent*\n\n` +
-    `Halo\\! Pilih menu di bawah ini:`;
+  const msg = `🤖 *YouTube Shorts Agent*\n\nHalo\\! Pilih menu di bawah ini:`;
 
   const opts = {
     parse_mode: 'MarkdownV2',
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🚀 Mulai Riset', callback_data: 'trigger_research' }],
-        [{ text: '📋 Cek Queue', callback_data: 'check_queue' }],
+        [{ text: '🚀 Mulai Riset', callback_data: 'menu_research' }],
+        [{ text: '📊 Cek Queue', callback_data: 'menu_queue' }],
       ]
     }
   };
@@ -611,6 +611,12 @@ async function notify(message) {
   }
 }
 
+async function sendStartupMessage() {
+  if (!bot) return;
+  const msg = `🤖 *YouTube Shorts Agent v1.0.0 aktif!*\nMode: *PRODUCTION*\n\nKetik /start untuk memulai produksi.`;
+  await bot.sendMessage(config.telegram.chatId, msg, { parse_mode: 'Markdown' });
+}
+
 async function sendResearchBriefing(videoId, jobId) {
   if (!bot) return;
   const research = readVideoJson(videoId, 'research.json');
@@ -626,8 +632,8 @@ async function sendResearchBriefing(videoId, jobId) {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '✅ GAS LANJUT', callback_data: `c_scr|${jobId}` },
-          { text: '❌ CANCEL', callback_data: `x_scr|${jobId}` },
+          { text: '✅ GAS LANJUT', callback_data: `res_ok:${jobId}` },
+          { text: '❌ CANCEL', callback_data: `res_no:${jobId}` },
         ]
       ]
     }
@@ -636,4 +642,4 @@ async function sendResearchBriefing(videoId, jobId) {
   await bot.sendMessage(config.telegram.chatId, msg, opts);
 }
 
-module.exports = { initBot, runTelegramAgent, notify, sendResearchBriefing };
+module.exports = { initBot, runTelegramAgent, notify, sendResearchBriefing, sendStartupMessage };

@@ -32,11 +32,8 @@ async function main() {
     logger.info('Scheduler aktif');
 
     // Step 4: Send startup notification
-    await notify(
-      `🤖 YouTube Shorts Agent v${APP_VERSION} aktif!\n` +
-      `Mode: ${config.dryRun ? 'DRY_RUN' : 'PRODUCTION'}\n` +
-      `Ketik /help untuk daftar perintah.`
-    );
+    const { sendStartupMessage } = require('./bot/telegram');
+    await sendStartupMessage();
 
     logger.info('=== Agent siap menerima perintah ===');
 

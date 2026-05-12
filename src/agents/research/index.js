@@ -50,7 +50,7 @@ async function runResearchAgent() {
     const jobId = pushJob('script', { video_id: result.video_id, correlation_id: result.correlation_id }, {
       correlationId: result.correlation_id,
       priority: 'normal',
-      status: 'WAITING_CONFIRMATION',
+      status: 'waiting_confirmation',
     });
 
     const { sendResearchBriefing } = require('../../bot/telegram');
