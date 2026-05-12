@@ -91,7 +91,14 @@ function ackJob(jobId) {
  * Mark a job as failed. Retry or move to dead-letter based on retry_count.
  */
 function nackJob(job, errorMsg) {
-  const newRetryCount = (job.retry_count || 0) + 1;
+  const errorLower = (errorMsg || '').toLowerCase();
+  const isFatal = errorLower.includes('slot produksi') || 
+                  errorLower.includes('billing') || 
+                  errorLower.includes('precondition');
+
+  // Paksa retry_count menjadi max_retry agar langsung masuk dead-letter jika fatal
+  const newRetryCount = isFatal ? job.max_retry : (job.retry_count || 0) + 1;
+  
   db.failJob(job.id, errorMsg, newRetryCount);
   _handleRetryOrDead({ ...job, retry_count: newRetryCount }, errorMsg);
 }
