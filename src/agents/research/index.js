@@ -36,12 +36,11 @@ async function runResearchAgent() {
 
   try {
     const db = require('../../utils/db').getDb();
-    const today = new Date().toISOString().split('T')[0];
-    const countObj = db.prepare(`SELECT COUNT(*) as c FROM videos WHERE date(created_at) = ?`).get(today);
+    const countObj = db.prepare(`SELECT COUNT(*) as c FROM videos WHERE date(created_at) = date('now')`).get();
     const dailyCount = countObj ? countObj.c : 0;
     
     if (dailyCount >= (config.maxProductionSlots || 3)) {
-      throw new Error('Slot produksi harian (MAX_PRODUCTION_SLOTS) sudah penuh');
+      throw new Error('SLOT_PENUH');
     }
 
     const result = await _processResearch(job);

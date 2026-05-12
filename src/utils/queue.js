@@ -92,7 +92,10 @@ function ackJob(jobId) {
  */
 function nackJob(job, errorMsg) {
   const errorLower = (errorMsg || '').toLowerCase();
-  const isFatal = errorLower.includes('slot produksi') || 
+  const isFatal = errorLower.includes('slot penuh') || 
+                  errorLower.includes('slot_penuh') || 
+                  errorLower.includes('max_production_slots') || 
+                  errorLower.includes('waiting_confirmation') || 
                   errorLower.includes('billing') || 
                   errorLower.includes('precondition');
 

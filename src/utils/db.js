@@ -229,8 +229,12 @@ function moveToDeadLetter(job, errorMsg) {
   completeJob(job.id); // Mark original as done so it's not retried
 }
 
-function clearAllJobs() {
-  getDb().prepare('DELETE FROM jobs').run();
+function hardResetDatabase() {
+  const db = getDb();
+  db.prepare('DELETE FROM jobs').run();
+  db.prepare('DELETE FROM videos').run();
+  try { db.prepare('DELETE FROM dead_letter').run(); } catch(e) {}
+  db.prepare('VACUUM').run();
 }
 
 function deleteJob(id) {
@@ -313,7 +317,7 @@ module.exports = {
   getDb,
   // Jobs
   insertJob, getNextPendingJob, claimNextPendingJob, lockJob, completeJob, failJob, requeueJob,
-  getTimedOutPendingJobs, getTimedOutProcessingJobs, moveToDeadLetter, clearAllJobs, deleteJob, updateJobStatus,
+  getTimedOutPendingJobs, getTimedOutProcessingJobs, moveToDeadLetter, hardResetDatabase, deleteJob, updateJobStatus,
   // Videos
   insertVideo, updateVideo, getVideo, getVideoByCorrelation,
   // Memory

@@ -66,23 +66,16 @@ async function withRetry(fn, opts = {}) {
 
 function isRetryable(err) {
   if (!err) return false;
+  const errorMsg = (err.message || '').toUpperCase();
   const status = err.response?.status || err.status;
-  const errorMsg = (err.message || '').toLowerCase() + 
-                   JSON.stringify(err.response?.data || '').toLowerCase();
 
-  // JANGAN RETRY jika slot penuh atau ada masalah billing permanen
-  if (errorMsg.includes('slot produksi') || errorMsg.includes('billing') || errorMsg.includes('precondition')) {
+  // STOP RETRY jika slot penuh atau butuh konfirmasi
+  if (errorMsg.includes('SLOT_PENUH') || errorMsg.includes('MAX_PRODUCTION_SLOTS') || errorMsg.includes('WAITING_CONFIRMATION')) {
     return false;
   }
-
-  const nonRetryableStatuses = [400, 401, 403, 404];
-  if (nonRetryableStatuses.includes(status) && status !== 400) return false;
-
-  // Izinkan retry untuk limitasi API (429) atau error server (5xx)
+  
   if (status === 429 || (status >= 500 && status <= 599)) return true;
-  if (err.code && ['ECONNRESET', 'ETIMEDOUT'].includes(err.code)) return true;
-
-  return errorMsg.includes('timeout') || errorMsg.includes('network');
+  return false; 
 }
 
 function sleep(ms) {

@@ -172,11 +172,21 @@ async function _handleCallback(query) {
     case 'view_desc':
       await _handleViewDesc(chatId, videoId);
       break;
-    case 'confirm_script':
-      await _handleConfirmScript(chatId, parts[1], parts[2]);
+    case 'c_scr':
+      await _handleConfirmScript(chatId, parts[1]);
       break;
-    case 'cancel_script':
-      await _handleCancelScript(chatId, parts[1], parts[2]);
+    case 'x_scr':
+      await _handleCancelScript(chatId, parts[1]);
+      break;
+    case 'trigger_research':
+      await bot.sendMessage(chatId, '🔄 Memulai pipeline research\\.\\.\\.', { parse_mode: 'MarkdownV2' });
+      const { triggerResearch } = require('../agents/research');
+      triggerResearch().catch((e) => {
+        bot.sendMessage(chatId, `❌ Error: ${_escape(e.message)}`, { parse_mode: 'MarkdownV2' });
+      });
+      break;
+    case 'check_queue':
+      await _sendQueueStats(chatId);
       break;
     default:
       logger.warn('Callback action tidak dikenal', { agent: AGENT, action });
@@ -361,20 +371,16 @@ async function _handleViewDesc(chatId, videoId) {
 
 // ─── Script Confirmation ──────────────────────────────────────────────────────
 
-async function _handleConfirmScript(chatId, jobId, videoId) {
+async function _handleConfirmScript(chatId, jobId) {
   const { updateJobStatus } = require('../utils/queue');
   updateJobStatus(jobId, 'pending');
-  await bot.sendMessage(chatId, `✅ Riset disetujui\\. Melanjutkan penulisan script untuk video \`${videoId}\`\\.\\.\\.`, { parse_mode: 'MarkdownV2' });
+  await bot.sendMessage(chatId, `✅ Riset disetujui\\. Melanjutkan penulisan script\\.\\.\\.`, { parse_mode: 'MarkdownV2' });
 }
 
-async function _handleCancelScript(chatId, jobId, videoId) {
+async function _handleCancelScript(chatId, jobId) {
   const { deleteJob } = require('../utils/queue');
   deleteJob(jobId);
-  const dir = path.join(config.paths.output, videoId);
-  if (fs.existsSync(dir)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  await bot.sendMessage(chatId, `❌ Riset dibatalkan\\. Job dan data video dihapus\\.`, { parse_mode: 'MarkdownV2' });
+  await bot.sendMessage(chatId, `❌ Riset dibatalkan\\. Job dihapus\\.`, { parse_mode: 'MarkdownV2' });
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────────
@@ -497,8 +503,8 @@ async function _handleDocumentUpload(msg) {
 }
 
 async function _handleClearQueue(chatId) {
-  const { clearAllJobs } = require('../utils/queue');
-  clearAllJobs();
+  const { hardResetDatabase } = require('../utils/db');
+  hardResetDatabase();
   const outputDir = config.paths.output;
   if (fs.existsSync(outputDir)) {
     const items = fs.readdirSync(outputDir);
@@ -514,15 +520,19 @@ async function _handleClearQueue(chatId) {
 
 async function _sendHelp(chatId) {
   const msg = `🤖 *YouTube Shorts Agent*\n\n` +
-    `Halo\\! Pilih perintah berikut:\n` +
-    `/trigger \\- Mulai pipeline riset baru\n` +
-    `/status \\- Status videos\n` +
-    `/queue \\- Status antrean jobs\n` +
-    `/clear\\_queue \\- Reset total antrean dan data output\n` +
-    `📊 Kirim file \\.csv untuk input analytics YouTube\n\n` +
-    `*Mode:* ${config.dryRun ? '🔵 DRY\\_RUN' : '🟢 PRODUCTION'}`;
+    `Halo\\! Pilih menu di bawah ini:`;
 
-  await bot.sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+  const opts = {
+    parse_mode: 'MarkdownV2',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🚀 Mulai Riset', callback_data: 'trigger_research' }],
+        [{ text: '📋 Cek Queue', callback_data: 'check_queue' }],
+      ]
+    }
+  };
+
+  await bot.sendMessage(chatId, msg, opts);
 }
 
 async function _sendStatus(chatId) {
@@ -616,8 +626,8 @@ async function sendResearchBriefing(videoId, jobId) {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '✅ GAS LANJUT', callback_data: `confirm_script|${jobId}|${videoId}` },
-          { text: '❌ CANCEL', callback_data: `cancel_script|${jobId}|${videoId}` },
+          { text: '✅ GAS LANJUT', callback_data: `c_scr|${jobId}` },
+          { text: '❌ CANCEL', callback_data: `x_scr|${jobId}` },
         ]
       ]
     }
