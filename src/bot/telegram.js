@@ -172,6 +172,12 @@ async function _handleCallback(query) {
     case 'view_desc':
       await _handleViewDesc(chatId, videoId);
       break;
+    case 'confirm_script':
+      await _handleConfirmScript(chatId, parts[1], parts[2]);
+      break;
+    case 'cancel_script':
+      await _handleCancelScript(chatId, parts[1], parts[2]);
+      break;
     default:
       logger.warn('Callback action tidak dikenal', { agent: AGENT, action });
   }
@@ -353,6 +359,24 @@ async function _handleViewDesc(chatId, videoId) {
   }
 }
 
+// ─── Script Confirmation ──────────────────────────────────────────────────────
+
+async function _handleConfirmScript(chatId, jobId, videoId) {
+  const { updateJobStatus } = require('../utils/queue');
+  updateJobStatus(jobId, 'pending');
+  await bot.sendMessage(chatId, `✅ Riset disetujui\\. Melanjutkan penulisan script untuk video \`${videoId}\`\\.\\.\\.`, { parse_mode: 'MarkdownV2' });
+}
+
+async function _handleCancelScript(chatId, jobId, videoId) {
+  const { deleteJob } = require('../utils/queue');
+  deleteJob(jobId);
+  const dir = path.join(config.paths.output, videoId);
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  await bot.sendMessage(chatId, `❌ Riset dibatalkan\\. Job dan data video dihapus\\.`, { parse_mode: 'MarkdownV2' });
+}
+
 // ─── Message handler ──────────────────────────────────────────────────────────
 
 async function _handleMessage(msg) {
@@ -414,6 +438,10 @@ async function _handleCommand(chatId, text, msg) {
       await _sendQueueStats(chatId);
       break;
 
+    case '/clear_queue':
+      await _handleClearQueue(chatId);
+      break;
+
     case '/trigger':
       await bot.sendMessage(chatId, '🔄 Memulai pipeline research\\.\\.\\.',
         { parse_mode: 'MarkdownV2' });
@@ -468,13 +496,29 @@ async function _handleDocumentUpload(msg) {
   }
 }
 
+async function _handleClearQueue(chatId) {
+  const { clearAllJobs } = require('../utils/queue');
+  clearAllJobs();
+  const outputDir = config.paths.output;
+  if (fs.existsSync(outputDir)) {
+    const items = fs.readdirSync(outputDir);
+    for (const item of items) {
+      const p = path.join(outputDir, item);
+      if (fs.statSync(p).isDirectory()) fs.rmSync(p, { recursive: true, force: true });
+    }
+  }
+  await bot.sendMessage(chatId, '✅ Semua antrean dan output folder berhasil direset\\.', { parse_mode: 'MarkdownV2' });
+}
+
 // ─── Info messages ────────────────────────────────────────────────────────────
 
 async function _sendHelp(chatId) {
   const msg = `🤖 *YouTube Shorts Agent*\n\n` +
-    `/trigger \\- Mulai pipeline research sekarang\n` +
+    `Halo\\! Pilih perintah berikut:\n` +
+    `/trigger \\- Mulai pipeline riset baru\n` +
     `/status \\- Status videos\n` +
-    `/queue \\- Status queue jobs\n` +
+    `/queue \\- Status antrean jobs\n` +
+    `/clear\\_queue \\- Reset total antrean dan data output\n` +
     `📊 Kirim file \\.csv untuk input analytics YouTube\n\n` +
     `*Mode:* ${config.dryRun ? '🔵 DRY\\_RUN' : '🟢 PRODUCTION'}`;
 
@@ -557,4 +601,29 @@ async function notify(message) {
   }
 }
 
-module.exports = { initBot, runTelegramAgent, notify };
+async function sendResearchBriefing(videoId, jobId) {
+  if (!bot) return;
+  const research = readVideoJson(videoId, 'research.json');
+  if (!research) return;
+
+  const msg = `🔍 *Briefing Riset Selesai*\n\n` +
+    `📌 *Topik:* ${_escape(research.topic)}\n` +
+    `💡 *Alasan:* ${_escape(research.trending_reason)}\n\n` +
+    `Lanjut ke penulisan script?`;
+
+  const opts = {
+    parse_mode: 'MarkdownV2',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ GAS LANJUT', callback_data: `confirm_script|${jobId}|${videoId}` },
+          { text: '❌ CANCEL', callback_data: `cancel_script|${jobId}|${videoId}` },
+        ]
+      ]
+    }
+  };
+
+  await bot.sendMessage(config.telegram.chatId, msg, opts);
+}
+
+module.exports = { initBot, runTelegramAgent, notify, sendResearchBriefing };

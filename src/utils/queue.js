@@ -32,7 +32,7 @@ function pushJob(type, payload, opts = {}) {
     id: uuidv4(),
     correlation_id: correlationId,
     type,
-    status: 'pending',
+    status: opts.status || 'pending',
     priority,
     retry_count: 0,
     max_retry: maxRetry,
@@ -159,4 +159,16 @@ function getQueueStats() {
   return rows;
 }
 
-module.exports = { pushJob, popJob, ackJob, nackJob, getQueueStats, PRIORITY };
+function clearAllJobs() {
+  db.clearAllJobs();
+}
+
+function deleteJob(id) {
+  db.deleteJob(id);
+}
+
+function updateJobStatus(id, status) {
+  db.updateJobStatus(id, status);
+}
+
+module.exports = { pushJob, popJob, ackJob, nackJob, getQueueStats, PRIORITY, clearAllJobs, deleteJob, updateJobStatus };

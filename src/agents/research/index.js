@@ -48,10 +48,14 @@ async function runResearchAgent() {
     ackJob(job.id);
     logger.info('Research Agent selesai', { agent: AGENT, videoId: result.video_id });
 
-    pushJob('script', { video_id: result.video_id, correlation_id: result.correlation_id }, {
+    const jobId = pushJob('script', { video_id: result.video_id, correlation_id: result.correlation_id }, {
       correlationId: result.correlation_id,
       priority: 'normal',
+      status: 'WAITING_CONFIRMATION',
     });
+
+    const { sendResearchBriefing } = require('../../bot/telegram');
+    await sendResearchBriefing(result.video_id, jobId);
   } catch (err) {
     logger.error('Research Agent gagal', {
       agent: AGENT, step: 'runResearchAgent',

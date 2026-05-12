@@ -229,6 +229,19 @@ function moveToDeadLetter(job, errorMsg) {
   completeJob(job.id); // Mark original as done so it's not retried
 }
 
+function clearAllJobs() {
+  getDb().prepare('DELETE FROM jobs').run();
+}
+
+function deleteJob(id) {
+  getDb().prepare('DELETE FROM jobs WHERE id = ?').run(id);
+}
+
+function updateJobStatus(id, status) {
+  const now = new Date().toISOString();
+  getDb().prepare('UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?').run(status, now, id);
+}
+
 // ─── Videos ──────────────────────────────────────────────────────────────────
 
 function insertVideo(video) {
@@ -300,7 +313,7 @@ module.exports = {
   getDb,
   // Jobs
   insertJob, getNextPendingJob, claimNextPendingJob, lockJob, completeJob, failJob, requeueJob,
-  getTimedOutPendingJobs, getTimedOutProcessingJobs, moveToDeadLetter,
+  getTimedOutPendingJobs, getTimedOutProcessingJobs, moveToDeadLetter, clearAllJobs, deleteJob, updateJobStatus,
   // Videos
   insertVideo, updateVideo, getVideo, getVideoByCorrelation,
   // Memory
