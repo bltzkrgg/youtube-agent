@@ -229,7 +229,7 @@ function moveToDeadLetter(job, errorMsg) {
   completeJob(job.id); // Mark original as done so it's not retried
 }
 
-function clearAllData() {
+function hardResetDatabase() {
   const db = getDb();
   try { db.prepare('DELETE FROM jobs').run(); } catch(e) {}
   try { db.prepare('DELETE FROM videos').run(); } catch(e) {}
@@ -319,7 +319,7 @@ module.exports = {
   getDb,
   // Jobs
   insertJob, getNextPendingJob, claimNextPendingJob, lockJob, completeJob, failJob, requeueJob,
-  getTimedOutPendingJobs, getTimedOutProcessingJobs, moveToDeadLetter, clearAllData, deleteJob, updateJobStatus,
+  getTimedOutPendingJobs, getTimedOutProcessingJobs, moveToDeadLetter, hardResetDatabase, deleteJob, updateJobStatus,
   // Videos
   insertVideo, updateVideo, getVideo, getVideoByCorrelation,
   // Memory

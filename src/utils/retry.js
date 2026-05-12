@@ -66,16 +66,10 @@ async function withRetry(fn, opts = {}) {
 
 function isRetryable(err) {
   if (!err) return false;
-  const errorMsg = (err.message || '').toUpperCase();
+  const msg = (err.message || '').toUpperCase();
+  if (msg.includes('SLOT_PENUH') || msg.includes('WAITING_CONFIRMATION')) return false;
   const status = err.response?.status || err.status;
-
-  // STOP RETRY jika slot penuh atau butuh konfirmasi
-  if (errorMsg.includes('SLOT_PENUH') || errorMsg.includes('MAX_PRODUCTION_SLOTS') || errorMsg.includes('WAITING_CONFIRMATION')) {
-    return false;
-  }
-  
-  if (status === 429 || (status >= 500 && status <= 599)) return true;
-  return false; 
+  return status === 429 || (status >= 500 && status <= 599);
 }
 
 function sleep(ms) {

@@ -173,20 +173,20 @@ async function _handleCallback(query) {
     case 'view_desc':
       await _handleViewDesc(chatId, videoId);
       break;
-    case 'res_ok':
+    case 'c_s':
       await _handleConfirmScript(chatId, parts[1]);
       break;
-    case 'res_no':
+    case 'x_s':
       await _handleCancelScript(chatId, parts[1]);
       break;
-    case 'menu_research':
+    case 'trigger_research':
       await bot.sendMessage(chatId, '🔄 Memulai pipeline research\\.\\.\\.', { parse_mode: 'MarkdownV2' });
       const { triggerResearch } = require('../agents/research');
       triggerResearch().catch((e) => {
         bot.sendMessage(chatId, `❌ Error: ${_escape(e.message)}`, { parse_mode: 'MarkdownV2' });
       });
       break;
-    case 'menu_queue':
+    case 'check_queue':
       await _sendQueueStats(chatId);
       break;
     default:
@@ -504,8 +504,8 @@ async function _handleDocumentUpload(msg) {
 }
 
 async function _handleClearQueue(chatId) {
-  const { clearAllData } = require('../utils/db');
-  clearAllData();
+  const { hardResetDatabase } = require('../utils/db');
+  hardResetDatabase();
   const outputDir = config.paths.output;
   if (fs.existsSync(outputDir)) {
     const items = fs.readdirSync(outputDir);
@@ -526,8 +526,8 @@ async function _sendHelp(chatId) {
     parse_mode: 'MarkdownV2',
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🚀 Mulai Riset', callback_data: 'menu_research' }],
-        [{ text: '📊 Cek Queue', callback_data: 'menu_queue' }],
+        [{ text: '🚀 Mulai Riset', callback_data: 'trigger_research' }],
+        [{ text: '📋 Cek Queue', callback_data: 'check_queue' }],
       ]
     }
   };
@@ -632,8 +632,8 @@ async function sendResearchBriefing(videoId, jobId) {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '✅ GAS LANJUT', callback_data: `res_ok:${jobId}` },
-          { text: '❌ CANCEL', callback_data: `res_no:${jobId}` },
+          { text: '✅ GAS LANJUT', callback_data: `c_s|${jobId}` },
+          { text: '❌ CANCEL', callback_data: `x_s|${jobId}` },
         ]
       ]
     }
