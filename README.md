@@ -263,6 +263,57 @@ Edit `src/agents/clip_planner/index.js` → `_analyzeWithLLM()` untuk customize:
 
 ---
 
+## 🧪 Testing & Validation
+
+### Validation
+```bash
+# Validate config, database, schemas
+npm run validate
+
+# Expected: 0 errors, warnings OK for missing API keys in DRY_RUN
+```
+
+### Dry-Run E2E Test
+```bash
+# Run full pipeline with mock data (no API calls, no downloads)
+npm run dry-run
+
+# Tests:
+# - SourceIngest → Transcript → SceneDetect → ClipPlanner → ClipRender
+# - Permission gate enforcement
+# - Idempotency (source URL, clips, render)
+# - Pipeline flow
+```
+
+### Real E2E Test (Required for Production)
+```bash
+# Prerequisites:
+# 1. Set real API keys in .env
+# 2. Use owned/licensed YouTube video
+# 3. Approve source manually
+
+# Start agent
+npm start
+
+# In another terminal, trigger clipper
+node src/trigger_clipper.js "https://youtube.com/watch?v=YOUR_VIDEO_ID"
+
+# Monitor logs
+tail -f logs/app.log
+
+# In Telegram, approve source
+/approve_source <source_video_id>
+
+# Wait for clips to render and review in Telegram
+```
+
+**⚠️ IMPORTANT**: System is **STAGING-READY**, not production-ready until:
+1. Real E2E test completed with actual YouTube video
+2. Copyright detection implemented OR clear legal disclaimer added
+3. Test results documented
+
+---
+
 ## 🔧 Troubleshooting
 
 ### yt-dlp not found
