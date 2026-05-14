@@ -128,7 +128,11 @@ function runMigrations(db) {
     CREATE INDEX IF NOT EXISTS idx_jobs_status           ON jobs(status, priority DESC, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_jobs_type             ON jobs(type, status);
     CREATE INDEX IF NOT EXISTS idx_source_videos_status  ON source_videos(status);
-    CREATE INDEX IF NOT EXISTS idx_source_videos_url     ON source_videos(source_url);
+    
+    -- Drop old non-unique index if exists, then create unique index
+    DROP INDEX IF EXISTS idx_source_videos_url;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_source_videos_url_unique ON source_videos(source_url);
+    
     CREATE INDEX IF NOT EXISTS idx_clips_source          ON clips(source_video_id);
     CREATE INDEX IF NOT EXISTS idx_clips_status          ON clips(status);
     CREATE INDEX IF NOT EXISTS idx_clips_unique          ON clips(source_video_id, start_sec, end_sec);

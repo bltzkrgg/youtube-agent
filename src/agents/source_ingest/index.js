@@ -127,20 +127,46 @@ async function _processSourceIngest(job) {
     risk_notes: 'Source permission not verified',
   };
   
-  insertSourceVideo({
-    id: sourceVideoId,
-    correlation_id: correlationId,
-    source_url: sourceUrl,
-    source_video_path: videoPath,
-    source_duration: metadata.duration,
-    channel_title: metadata.channel,
-    video_title: metadata.title,
-    description: metadata.description,
-    ...defaultPermission,
-    status: 'processing',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
+  // Insert with UNIQUE constraint handling
+  try {
+    insertSourceVideo({
+      id: sourceVideoId,
+      correlation_id: correlationId,
+      source_url: sourceUrl,
+      source_video_path: videoPath,
+      source_duration: metadata.duration,
+      channel_title: metadata.channel,
+      video_title: metadata.title,
+      description: metadata.description,
+      ...defaultPermission,
+      status: 'processing',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (insertErr) {
+    // Handle UNIQUE constraint violation (concurrent insert)
+    if (insertErr.message && insertErr.message.includes('UNIQUE constraint')) {
+      logger.warn('Concurrent insert detected, using existing source_video', {
+        agent: AGENT,
+        sourceUrl,
+        error: insertErr.message,
+      });
+      // Re-check for existing source_video
+      const { getDb } = require('../../utils/db');
+      const existing = getDb().prepare(`
+        SELECT id FROM source_videos WHERE source_url = ? LIMIT 1
+      `).get(sourceUrl);
+      if (existing) {
+        return {
+          source_video_id: existing.id,
+          correlation_id: correlationId,
+          skipped: true,
+          reason: 'concurrent_insert',
+        };
+      }
+    }
+    throw insertErr;
+  }
 
   return data;
 }
@@ -234,20 +260,44 @@ function _mockSourceIngest(sourceVideoId, correlationId, sourceUrl, videoDir) {
     risk_notes: 'Source permission not verified',
   };
   
-  insertSourceVideo({
-    id: sourceVideoId,
-    correlation_id: correlationId,
-    source_url: sourceUrl,
-    source_video_path: videoPath,
-    source_duration: 180.5,
-    channel_title: 'Mock Channel',
-    video_title: 'Mock Video Title',
-    description: 'Mock description',
-    ...defaultPermission,
-    status: 'processing',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
+  // Insert with UNIQUE constraint handling
+  try {
+    insertSourceVideo({
+      id: sourceVideoId,
+      correlation_id: correlationId,
+      source_url: sourceUrl,
+      source_video_path: videoPath,
+      source_duration: 180.5,
+      channel_title: 'Mock Channel',
+      video_title: 'Mock Video Title',
+      description: 'Mock description',
+      ...defaultPermission,
+      status: 'processing',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (insertErr) {
+    // Handle UNIQUE constraint violation (concurrent insert)
+    if (insertErr.message && insertErr.message.includes('UNIQUE constraint')) {
+      logger.warn('[DRY_RUN] Concurrent insert detected, using existing source_video', {
+        agent: AGENT,
+        sourceUrl,
+      });
+      const { getDb } = require('../../utils/db');
+      const existing = getDb().prepare(`
+        SELECT id FROM source_videos WHERE source_url = ? LIMIT 1
+      `).get(sourceUrl);
+      if (existing) {
+        return {
+          source_video_id: existing.id,
+          correlation_id: correlationId,
+          skipped: true,
+          reason: 'concurrent_insert',
+        };
+      }
+    }
+    throw insertErr;
+  }
 
   return output;
 }
