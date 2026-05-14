@@ -2,7 +2,98 @@
 
 const { z } = require('zod');
 
-// ─── Research Agent ──────────────────────────────────────────────────────────
+// ─── Source Ingest Agent ─────────────────────────────────────────────────────
+
+const SourceIngestOutput = z.object({
+  source_video_id: z.string().uuid(),
+  correlation_id: z.string().uuid(),
+  source_url: z.string().url(),
+  source_video_path: z.string(),
+  source_duration: z.number().positive(),
+  channel_title: z.string().optional(),
+  video_title: z.string(),
+  description: z.string().optional(),
+  version: z.string().default('1.0'),
+  created_at: z.string().datetime(),
+});
+
+// ─── Transcript Agent ────────────────────────────────────────────────────────
+
+const TranscriptSegment = z.object({
+  id: z.number().int().nonnegative(),
+  start: z.number().nonnegative(),
+  end: z.number().positive(),
+  text: z.string(),
+});
+
+const TranscriptOutput = z.object({
+  source_video_id: z.string().uuid(),
+  correlation_id: z.string().uuid(),
+  text: z.string(),
+  language: z.string().default('id'),
+  segments: z.array(TranscriptSegment),
+  version: z.string().default('1.0'),
+  created_at: z.string().datetime(),
+});
+
+// ─── Scene Detect Agent ──────────────────────────────────────────────────────
+
+const SceneSegment = z.object({
+  index: z.number().int().nonnegative(),
+  start_sec: z.number().nonnegative(),
+  end_sec: z.number().positive(),
+  duration_sec: z.number().positive(),
+});
+
+const SceneDetectOutput = z.object({
+  source_video_id: z.string().uuid(),
+  correlation_id: z.string().uuid(),
+  scenes: z.array(SceneSegment).min(1),
+  version: z.string().default('1.0'),
+  created_at: z.string().datetime(),
+});
+
+// ─── Clip Planner Agent ──────────────────────────────────────────────────────
+
+const ClipPlan = z.object({
+  clip_id: z.string().uuid(),
+  start_sec: z.number().nonnegative(),
+  end_sec: z.number().positive(),
+  duration_sec: z.number().positive().max(60),
+  score: z.number().min(0).max(100),
+  hook_type: z.string(),
+  reason: z.string(),
+  caption_plan: z.string(),
+  reframe_strategy: z.enum(['center', 'face_track', 'action_follow']).default('center'),
+  risk_notes: z.string().optional(),
+});
+
+const ClipPlannerOutput = z.object({
+  source_video_id: z.string().uuid(),
+  correlation_id: z.string().uuid(),
+  clips: z.array(ClipPlan).min(1).max(10),
+  version: z.string().default('1.0'),
+  created_at: z.string().datetime(),
+});
+
+// ─── Clip Render Output ──────────────────────────────────────────────────────
+
+const ClipRenderOutput = z.object({
+  clip_id: z.string().uuid(),
+  source_video_id: z.string().uuid(),
+  correlation_id: z.string().uuid(),
+  final_video_path: z.string(),
+  thumbnail_path: z.string(),
+  start_sec: z.number().nonnegative(),
+  end_sec: z.number().positive(),
+  duration_sec: z.number().positive().max(60),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  version: z.string().default('1.0'),
+  created_at: z.string().datetime(),
+});
+
+// ─── Research Agent (legacy) ─────────────────────────────────────────────────
 
 const ResearchOutput = z.object({
   video_id: z.string().uuid(),
@@ -14,16 +105,16 @@ const ResearchOutput = z.object({
   created_at: z.string().datetime(),
 });
 
-// ─── Script Agent ────────────────────────────────────────────────────────────
+// ─── Script Agent (legacy) ───────────────────────────────────────────────────
 
 const ScriptSegment = z.object({
   index: z.number().int().nonnegative(),
   type: z.string()
     .transform((v) => v.toLowerCase().replace(/[-_\s]/g, '') === 'buildup' ? 'buildup' : v)
     .pipe(z.enum(['hook', 'buildup', 'climax', 'cliffhanger'])),
-  text: z.string().min(1),           // narration text for TTS
-  visual_keyword: z.string().min(2), // AI video prompt seed
-  sfx: z.string().optional(),        // sound effect hint: whoosh, hit, glitch, silence
+  text: z.string().min(1),
+  visual_keyword: z.string().min(2),
+  sfx: z.string().optional(),
   duration_hint_sec: z.number().positive(),
 });
 
@@ -53,7 +144,7 @@ const MetadataOutput = z.object({
   created_at: z.string().datetime(),
 });
 
-// ─── Voiceover Agent ─────────────────────────────────────────────────────────
+// ─── Voiceover Agent (legacy) ────────────────────────────────────────────────
 
 const VoiceoverSegment = z.object({
   index: z.number().int().nonnegative(),
@@ -73,7 +164,7 @@ const VoiceoverOutput = z.object({
   created_at: z.string().datetime(),
 });
 
-// ─── Visual Agent ─────────────────────────────────────────────────────────────
+// ─── Visual Agent (legacy) ───────────────────────────────────────────────────
 
 const VisualSegment = z.object({
   index: z.number().int().nonnegative(),
@@ -91,7 +182,7 @@ const VisualOutput = z.object({
   created_at: z.string().datetime(),
 });
 
-// ─── Clip Agent ──────────────────────────────────────────────────────────────
+// ─── Clip Agent (legacy) ─────────────────────────────────────────────────────
 
 const ClipOutput = z.object({
   video_id: z.string().uuid(),
@@ -120,11 +211,12 @@ const AnalyticsRow = z.object({
 // ─── Memory ──────────────────────────────────────────────────────────────────
 
 const MemoryRecord = z.object({
-  topic: z.string().min(2),
+  pattern_type: z.string().min(2),
+  pattern_value: z.string().min(1),
   weight: z.number().min(0).max(10),
   views_avg: z.number().nonnegative(),
   engagement: z.number().min(0).max(100),
-  video_count: z.number().int().nonnegative(),
+  clip_count: z.number().int().nonnegative(),
   last_updated: z.string().datetime(),
 });
 
@@ -162,6 +254,19 @@ const OpenRouterScriptResponse = z.object({
   cliffhanger: z.string(),
 });
 
+const OpenRouterClipPlansResponse = z.object({
+  clips: z.array(z.object({
+    start_sec: z.number().nonnegative(),
+    end_sec: z.number().positive(),
+    score: z.number().min(0).max(100),
+    hook_type: z.string(),
+    reason: z.string(),
+    caption_plan: z.string(),
+    reframe_strategy: z.enum(['center', 'face_track', 'action_follow']).default('center'),
+    risk_notes: z.string().optional(),
+  })).min(1).max(10),
+});
+
 // ─── Validate helper ─────────────────────────────────────────────────────────
 
 function validate(schema, data, context = 'unknown') {
@@ -177,6 +282,16 @@ function validate(schema, data, context = 'unknown') {
 }
 
 module.exports = {
+  // New clipper schemas
+  SourceIngestOutput,
+  TranscriptSegment,
+  TranscriptOutput,
+  SceneSegment,
+  SceneDetectOutput,
+  ClipPlan,
+  ClipPlannerOutput,
+  ClipRenderOutput,
+  // Legacy schemas
   ResearchOutput,
   ScriptSegment,
   ScriptOutput,
@@ -191,5 +306,6 @@ module.exports = {
   OpenRouterTopicsResponse,
   OpenRouterMetadataResponse,
   OpenRouterScriptResponse,
+  OpenRouterClipPlansResponse,
   validate,
 };

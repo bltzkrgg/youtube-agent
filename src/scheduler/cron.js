@@ -11,57 +11,79 @@ const activeTasks = [];
 
 // ─── Pipeline schedule (UTC) ─────────────────────────────────────────────────
 //
-//  Research hanya di-trigger sekali sehari (00:00 UTC).
-//  Semua pipeline agent poll queue setiap 5 menit — langsung return jika
-//  tidak ada job. Ini memastikan pipeline tidak terputus meski satu stage
-//  butuh waktu lebih lama dari jadwal tetap.
+//  NEW CLIPPER PIPELINE:
+//  Manual trigger → SourceIngest → Transcript + SceneDetect (parallel) →
+//  ClipPlanner → ClipRender (per clip) → TelegramReview → Analytics → Memory
 //
-//  00:00       → Research  (trigger harian)
-//  */5 min     → Script, Metadata, Affiliate, Voiceover, Visual, Clip,
-//                Telegram (poll queue)
+//  */5 min     → All pipeline agents poll queue
 //  16:00       → Analytics (proses CSV dari queue)
 //  16:30       → Memory    (update learning weights)
-//  Sun 03:00   → Cleanup   (hapus rejected videos >7 hari)
+//  Sun 03:00   → Cleanup   (hapus rejected clips >7 hari)
 
 const SCHEDULES = [
-  // ── Trigger harian ──────────────────────────────────────────────────────
+  // ── NEW CLIPPER PIPELINE — poll setiap 5 menit ──────────────────────────
   {
-    name: 'Research',
-    cron: '0 0 * * *',
-    agent: () => require('../agents/research').runResearchAgent(),
-  },
-
-  // ── Pipeline agents — poll setiap 5 menit ───────────────────────────────
-  {
-    name: 'Script',
+    name: 'SourceIngest',
     cron: '*/5 * * * *',
-    agent: () => require('../agents/script').runScriptAgent(),
+    agent: () => require('../agents/source_ingest').runSourceIngestAgent(),
   },
   {
-    name: 'Metadata',
+    name: 'Transcript',
     cron: '*/5 * * * *',
-    agent: () => require('../agents/metadata').runMetadataAgent(),
+    agent: () => require('../agents/transcript').runTranscriptAgent(),
   },
   {
-    name: 'Voiceover',
+    name: 'SceneDetect',
     cron: '*/5 * * * *',
-    agent: () => require('../agents/voiceover').runVoiceoverAgent(),
+    agent: () => require('../agents/scene_detect').runSceneDetectAgent(),
   },
   {
-    name: 'Visual',
+    name: 'ClipPlanner',
     cron: '*/5 * * * *',
-    agent: () => require('../agents/visual').runVisualAgent(),
+    agent: () => require('../agents/clip_planner').runClipPlannerAgent(),
   },
   {
-    name: 'Clip',
+    name: 'ClipRender',
     cron: '*/5 * * * *',
-    agent: () => require('../agents/clip').runClipAgent(),
+    agent: () => require('../agents/clip_render').runClipRenderAgent(),
   },
   {
     name: 'Telegram',
     cron: '*/5 * * * *',
     agent: () => require('../bot/telegram').runTelegramAgent(),
   },
+
+  // ── LEGACY PIPELINE (disabled by default, uncomment to enable) ──────────
+  // {
+  //   name: 'Research',
+  //   cron: '0 0 * * *',
+  //   agent: () => require('../agents/research').runResearchAgent(),
+  // },
+  // {
+  //   name: 'Script',
+  //   cron: '*/5 * * * *',
+  //   agent: () => require('../agents/script').runScriptAgent(),
+  // },
+  // {
+  //   name: 'Metadata',
+  //   cron: '*/5 * * * *',
+  //   agent: () => require('../agents/metadata').runMetadataAgent(),
+  // },
+  // {
+  //   name: 'Voiceover',
+  //   cron: '*/5 * * * *',
+  //   agent: () => require('../agents/voiceover').runVoiceoverAgent(),
+  // },
+  // {
+  //   name: 'Visual',
+  //   cron: '*/5 * * * *',
+  //   agent: () => require('../agents/visual').runVisualAgent(),
+  // },
+  // {
+  //   name: 'Clip',
+  //   cron: '*/5 * * * *',
+  //   agent: () => require('../agents/clip').runClipAgent(),
+  // },
 
   // ── Analytics & Memory — harian ─────────────────────────────────────────
   {
@@ -75,7 +97,6 @@ const SCHEDULES = [
     agent: () => require('../agents/memory').runMemoryAgent(),
   },
   // ── Rejection penalty — near-realtime (every minute) ────────────────────
-  // High-priority feedback: applied immediately after user taps reject button
   {
     name: 'MemoryPenalty',
     cron: '* * * * *',
