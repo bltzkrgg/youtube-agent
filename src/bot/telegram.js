@@ -83,6 +83,17 @@ async function _sendClipForReview(clipId, sourceVideoId, correlationId) {
 
   if (!clipDb || !sourceVideo) throw new Error('Data clip tidak lengkap untuk review');
 
+  // IDEMPOTENCY: Skip if clip already sent for review or processed
+  if (clipDb.status === 'pending_review' || clipDb.status === 'approved' || 
+      clipDb.status === 'rejected' || clipDb.status === 'uploaded') {
+    logger.info('Clip sudah dikirim untuk review atau sudah diproses, skip', {
+      agent: AGENT,
+      clipId,
+      status: clipDb.status,
+    });
+    return;
+  }
+
   // Find enriched clip data from clip_planner.json
   const clipPlan = clipPlannerData?.clips?.find(c => c.clip_id === clipId);
 
