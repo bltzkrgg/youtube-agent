@@ -81,6 +81,12 @@ function runMigrations(db) {
       caption_plan        TEXT,
       reframe_strategy    TEXT,
       risk_notes          TEXT,
+      title               TEXT,
+      description         TEXT,
+      hashtags            TEXT,
+      source_url          TEXT,
+      source_channel      TEXT,
+      attribution         TEXT,
       final_video_path    TEXT,
       thumbnail_path      TEXT,
       status              TEXT NOT NULL DEFAULT 'pending',
@@ -318,9 +324,11 @@ function insertClip(clip) {
   db.prepare(`
     INSERT INTO clips (id, source_video_id, correlation_id, start_sec, end_sec, duration_sec,
                        score, hook_type, caption_plan, reframe_strategy, risk_notes,
+                       title, description, hashtags, source_url, source_channel, attribution,
                        final_video_path, thumbnail_path, status, created_at, updated_at)
     VALUES (@id, @source_video_id, @correlation_id, @start_sec, @end_sec, @duration_sec,
             @score, @hook_type, @caption_plan, @reframe_strategy, @risk_notes,
+            @title, @description, @hashtags, @source_url, @source_channel, @attribution,
             @final_video_path, @thumbnail_path, @status, @created_at, @updated_at)
   `).run(clip);
 }

@@ -69,6 +69,25 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
   if (!sourceIngest) throw new Error(`source_ingest.json tidak ditemukan untuk ${sourceVideoId}`);
   if (!clipDb) throw new Error(`Clip ${clipId} tidak ditemukan di database`);
 
+  // IDEMPOTENCY: Skip if already rendered or in review/approved
+  if (clipDb.status === 'pending_review' || clipDb.status === 'approved' || clipDb.status === 'uploaded') {
+    logger.info('Clip sudah dirender, skip', { 
+      agent: AGENT, 
+      clipId, 
+      status: clipDb.status,
+      finalVideoPath: clipDb.final_video_path 
+    });
+    return {
+      clip_id: clipId,
+      source_video_id: sourceVideoId,
+      correlation_id: correlationId,
+      final_video_path: clipDb.final_video_path,
+      thumbnail_path: clipDb.thumbnail_path,
+      status: clipDb.status,
+      skipped: true,
+    };
+  }
+
   const videoDir = getVideoDir(sourceVideoId);
   const clipDir = path.join(videoDir, 'clips', clipId);
   fs.mkdirSync(clipDir, { recursive: true });

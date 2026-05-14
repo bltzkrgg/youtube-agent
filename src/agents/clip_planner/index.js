@@ -275,6 +275,11 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
 
   // Insert clips into database
   for (const clip of data.clips) {
+    // Generate metadata for clip
+    const clipTitle = `${sourceIngest.video_title} - ${clip.hook_type} clip`;
+    const clipDescription = `Clip dari: ${sourceIngest.video_title}\nChannel: ${sourceIngest.channel_title}\nDuration: ${clip.duration_sec.toFixed(1)}s\n\n${clip.reason}`;
+    const clipHashtags = `#Shorts #${clip.hook_type.replace('_', '')} #viral`;
+    
     insertClip({
       id: clip.clip_id,
       source_video_id: sourceVideoId,
@@ -287,6 +292,12 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
       caption_plan: clip.caption_plan,
       reframe_strategy: clip.reframe_strategy,
       risk_notes: clip.risk_notes || null,
+      title: clipTitle,
+      description: clipDescription,
+      hashtags: clipHashtags,
+      source_url: sourceIngest.source_url,
+      source_channel: sourceIngest.channel_title,
+      attribution: `Source: ${sourceIngest.channel_title} - ${sourceIngest.source_url}`,
       final_video_path: null,
       thumbnail_path: null,
       status: 'pending',

@@ -56,6 +56,37 @@ async function _processSourceIngest(job) {
 
   if (!sourceUrl) throw new Error('source_url tidak ada di payload');
 
+  // IDEMPOTENCY: Check if source URL already processed
+  const { getDb } = require('../../utils/db');
+  const existing = getDb().prepare(`
+    SELECT id, status FROM source_videos 
+    WHERE source_url = ? 
+    ORDER BY created_at DESC 
+    LIMIT 1
+  `).get(sourceUrl);
+
+  if (existing) {
+    if (existing.status === 'processing' || existing.status === 'completed') {
+      logger.info('Source URL sudah diproses, skip', { 
+        agent: AGENT, 
+        sourceUrl, 
+        existingId: existing.id,
+        status: existing.status 
+      });
+      return {
+        source_video_id: existing.id,
+        correlation_id: correlationId,
+        skipped: true,
+      };
+    }
+    // If failed, allow retry with new ID
+    logger.info('Source URL pernah gagal, retry dengan ID baru', { 
+      agent: AGENT, 
+      sourceUrl, 
+      previousId: existing.id 
+    });
+  }
+
   const sourceVideoId = uuidv4();
   const videoDir = getVideoDir(sourceVideoId);
 
