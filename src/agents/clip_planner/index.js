@@ -76,6 +76,25 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
   if (!transcript) throw new Error(`transcript.json tidak ditemukan untuk ${sourceVideoId}`);
   if (!sceneDetect) throw new Error(`scene_detect.json tidak ditemukan untuk ${sourceVideoId}`);
 
+  // Check permission gate
+  const { getSourceVideo } = require('../../utils/db');
+  const sourceVideo = getSourceVideo(sourceVideoId);
+  
+  if (!sourceVideo) {
+    throw new Error(`Source video ${sourceVideoId} tidak ditemukan di database`);
+  }
+
+  // Log permission status (don't block, just warn)
+  if (sourceVideo.permission_status === 'unknown' || sourceVideo.allowed_to_clip === 0) {
+    logger.warn('Source video belum diverifikasi permission-nya', {
+      agent: AGENT,
+      sourceVideoId,
+      permissionStatus: sourceVideo.permission_status,
+      riskLevel: sourceVideo.risk_level,
+      riskNotes: sourceVideo.risk_notes,
+    });
+  }
+
   if (config.dryRun) return _mockClipPlanner(sourceVideoId, correlationId);
 
   logger.info('Menganalisis transcript dan scene untuk menemukan viral moments', { agent: AGENT });

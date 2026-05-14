@@ -59,6 +59,10 @@ function runMigrations(db) {
       channel_title       TEXT,
       video_title         TEXT,
       description         TEXT,
+      permission_status   TEXT NOT NULL DEFAULT 'unknown',
+      allowed_to_clip     INTEGER NOT NULL DEFAULT 0,
+      risk_level          TEXT NOT NULL DEFAULT 'unknown',
+      risk_notes          TEXT,
       status              TEXT NOT NULL DEFAULT 'processing',
       created_at          TEXT NOT NULL,
       updated_at          TEXT NOT NULL
@@ -281,9 +285,13 @@ function insertSourceVideo(video) {
   const db = getDb();
   db.prepare(`
     INSERT INTO source_videos (id, correlation_id, source_url, source_video_path, source_duration,
-                               channel_title, video_title, description, status, created_at, updated_at)
+                               channel_title, video_title, description, 
+                               permission_status, allowed_to_clip, risk_level, risk_notes,
+                               status, created_at, updated_at)
     VALUES (@id, @correlation_id, @source_url, @source_video_path, @source_duration,
-            @channel_title, @video_title, @description, @status, @created_at, @updated_at)
+            @channel_title, @video_title, @description,
+            @permission_status, @allowed_to_clip, @risk_level, @risk_notes,
+            @status, @created_at, @updated_at)
   `).run(video);
 }
 
@@ -364,13 +372,13 @@ function getVideoByCorrelation(correlationId) {
 function upsertMemory(record) {
   const db = getDb();
   db.prepare(`
-    INSERT INTO memory (id, topic, weight, views_avg, engagement, video_count, last_updated, created_at)
-    VALUES (@id, @topic, @weight, @views_avg, @engagement, @video_count, @last_updated, @created_at)
-    ON CONFLICT(topic) DO UPDATE SET
+    INSERT INTO memory (id, pattern_type, pattern_value, weight, views_avg, engagement, clip_count, last_updated, created_at)
+    VALUES (@id, @pattern_type, @pattern_value, @weight, @views_avg, @engagement, @clip_count, @last_updated, @created_at)
+    ON CONFLICT(pattern_type, pattern_value) DO UPDATE SET
       weight       = excluded.weight,
       views_avg    = excluded.views_avg,
       engagement   = excluded.engagement,
-      video_count  = excluded.video_count,
+      clip_count   = excluded.clip_count,
       last_updated = excluded.last_updated
   `).run(record);
 }
@@ -379,18 +387,35 @@ function getAllMemory() {
   return getDb().prepare('SELECT * FROM memory ORDER BY weight DESC').all();
 }
 
+function getTopPatterns(patternType, limit = 10) {
+  return getDb().prepare(`
+    SELECT * FROM memory 
+    WHERE pattern_type = ? AND weight > 0.2
+    ORDER BY weight DESC 
+    LIMIT ?
+  `).all(patternType, limit);
+}
+
+function getAvoidPatterns(patternType) {
+  return getDb().prepare(`
+    SELECT * FROM memory 
+    WHERE pattern_type = ? AND weight < 0.2
+    ORDER BY weight ASC
+  `).all(patternType);
+}
+
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
 function insertAnalytics(record) {
   const db = getDb();
   db.prepare(`
-    INSERT INTO analytics (id, video_id, views, likes, comments, ctr, avg_view_pct, recorded_at)
-    VALUES (@id, @video_id, @views, @likes, @comments, @ctr, @avg_view_pct, @recorded_at)
+    INSERT INTO analytics (id, clip_id, views, likes, comments, ctr, avg_view_pct, recorded_at)
+    VALUES (@id, @clip_id, @views, @likes, @comments, @ctr, @avg_view_pct, @recorded_at)
   `).run(record);
 }
 
-function getAnalyticsByVideo(videoId) {
-  return getDb().prepare('SELECT * FROM analytics WHERE video_id = ?').all(videoId);
+function getAnalyticsByClip(clipId) {
+  return getDb().prepare('SELECT * FROM analytics WHERE clip_id = ? ORDER BY recorded_at DESC').all(clipId);
 }
 
 function closeDb() {
@@ -412,9 +437,9 @@ module.exports = {
   // Videos (legacy)
   insertVideo, updateVideo, getVideo, getVideoByCorrelation,
   // Memory
-  upsertMemory, getAllMemory,
+  upsertMemory, getAllMemory, getTopPatterns, getAvoidPatterns,
   // Analytics
-  insertAnalytics, getAnalyticsByVideo,
+  insertAnalytics, getAnalyticsByClip,
   // Lifecycle
   closeDb,
 };

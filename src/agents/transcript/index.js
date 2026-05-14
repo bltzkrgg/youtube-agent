@@ -31,6 +31,13 @@ async function runTranscriptAgent() {
     await _processTranscript(source_video_id, correlation_id || job.correlation_id);
     ackJob(job.id);
     logger.info('Transcript Agent selesai', { agent: AGENT, sourceVideoId: source_video_id });
+
+    // Check if scene_detect is also done, then trigger clip_planner (idempotent)
+    const sceneDetect = readVideoJson(source_video_id, 'scene_detect.json');
+    if (sceneDetect) {
+      logger.info('Scene detect dan transcript selesai, memulai clip planner', { agent: AGENT });
+      _enqueueClipPlannerOnce(source_video_id, correlation_id || job.correlation_id);
+    }
   } catch (err) {
     logger.error('Transcript Agent gagal', {
       agent: AGENT, step: 'runTranscriptAgent',
@@ -140,6 +147,33 @@ function _mockTranscript(sourceVideoId, correlationId) {
 
   writeVideoJson(sourceVideoId, 'transcript.json', output);
   return output;
+}
+
+// ─── Idempotent clip_planner enqueue ─────────────────────────────────────────
+
+function _enqueueClipPlannerOnce(sourceVideoId, correlationId) {
+  const { getDb } = require('../../utils/db');
+  const { pushJob } = require('../../utils/queue');
+  
+  // Check if clip_planner job already exists for this source_video
+  const existing = getDb().prepare(`
+    SELECT id FROM jobs 
+    WHERE type = 'clip_planner' 
+      AND json_extract(payload, '$.source_video_id') = ?
+      AND status IN ('pending', 'processing')
+    LIMIT 1
+  `).get(sourceVideoId);
+
+  if (existing) {
+    logger.info('Clip planner job sudah ada, skip enqueue', { agent: AGENT, sourceVideoId });
+    return;
+  }
+
+  pushJob('clip_planner', { source_video_id: sourceVideoId, correlation_id: correlationId }, {
+    correlationId,
+    priority: 'normal',
+  });
+  logger.info('Clip planner job dienqueue', { agent: AGENT, sourceVideoId });
 }
 
 module.exports = { runTranscriptAgent };
