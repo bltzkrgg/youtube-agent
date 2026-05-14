@@ -531,8 +531,16 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
 
   writeVideoJson(sourceVideoId, 'clip_planner.json', output);
 
-  // Insert mock clips into database
+  // Get source video for metadata
+  const { getSourceVideo } = require('../../utils/db');
+  const sourceVideo = getSourceVideo(sourceVideoId);
+
+  // Insert mock clips into database with metadata
   for (const clip of clips) {
+    const clipTitle = `${sourceVideo?.video_title || 'Mock Video'} - ${clip.hook_type} clip`;
+    const clipDescription = `Clip dari: ${sourceVideo?.video_title || 'Mock Video'}\nChannel: ${sourceVideo?.channel_title || 'Mock Channel'}\nDuration: ${clip.duration_sec.toFixed(1)}s\n\n${clip.reason}`;
+    const clipHashtags = `#Shorts #${clip.hook_type.replace('_', '')} #viral`;
+    
     insertClip({
       id: clip.clip_id,
       source_video_id: sourceVideoId,
@@ -545,6 +553,12 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
       caption_plan: clip.caption_plan,
       reframe_strategy: clip.reframe_strategy,
       risk_notes: clip.risk_notes,
+      title: clipTitle,
+      description: clipDescription,
+      hashtags: clipHashtags,
+      source_url: sourceVideo?.source_url || 'https://youtube.com/watch?v=mock',
+      source_channel: sourceVideo?.channel_title || 'Mock Channel',
+      attribution: `Source: ${sourceVideo?.channel_title || 'Mock Channel'} - ${sourceVideo?.source_url || 'mock'}`,
       final_video_path: null,
       thumbnail_path: null,
       status: 'pending',
