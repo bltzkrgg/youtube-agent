@@ -118,6 +118,15 @@ async function _processSourceIngest(job) {
   if (!success) throw new Error(`Validasi SourceIngestOutput gagal: ${error}`);
 
   writeVideoJson(sourceVideoId, 'source_ingest.json', data);
+  
+  // Default permission/risk settings
+  const defaultPermission = {
+    permission_status: 'unknown',
+    allowed_to_clip: 0,
+    risk_level: 'manual_review',
+    risk_notes: 'Source permission not verified',
+  };
+  
   insertSourceVideo({
     id: sourceVideoId,
     correlation_id: correlationId,
@@ -127,10 +136,7 @@ async function _processSourceIngest(job) {
     channel_title: metadata.channel,
     video_title: metadata.title,
     description: metadata.description,
-    permission_status: 'unknown',
-    allowed_to_clip: 0,
-    risk_level: 'unknown',
-    risk_notes: 'PERHATIAN: Sistem tidak melakukan copyright check. User bertanggung jawab memastikan source video boleh di-clip. Periksa lisensi, fair use, dan izin channel owner.',
+    ...defaultPermission,
     status: 'processing',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -219,6 +225,15 @@ function _mockSourceIngest(sourceVideoId, correlationId, sourceUrl, videoDir) {
   };
 
   writeVideoJson(sourceVideoId, 'source_ingest.json', output);
+  
+  // Default permission/risk settings (same as real mode)
+  const defaultPermission = {
+    permission_status: 'unknown',
+    allowed_to_clip: 0,
+    risk_level: 'manual_review',
+    risk_notes: 'Source permission not verified',
+  };
+  
   insertSourceVideo({
     id: sourceVideoId,
     correlation_id: correlationId,
@@ -228,10 +243,7 @@ function _mockSourceIngest(sourceVideoId, correlationId, sourceUrl, videoDir) {
     channel_title: 'Mock Channel',
     video_title: 'Mock Video Title',
     description: 'Mock description',
-    permission_status: 'unknown',
-    allowed_to_clip: 0,
-    risk_level: 'low',
-    risk_notes: '[DRY_RUN] Mock source video - no real copyright check',
+    ...defaultPermission,
     status: 'processing',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
