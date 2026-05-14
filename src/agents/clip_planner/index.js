@@ -303,6 +303,27 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
 async function _analyzeWithLLM(sourceIngest, transcript, sceneDetect) {
   const model = config.openrouter.models.clipPlanner; // Use clipPlanner model
 
+  // Get memory recommendations (if available)
+  const { getTopPatterns, getAvoidPatterns } = require('../memory');
+  let memoryContext = '';
+  
+  try {
+    const topHooks = getTopPatterns('hook_type', 3);
+    const topDurations = getTopPatterns('duration_range', 2);
+    const avoidHooks = getAvoidPatterns('hook_type', 3);
+    
+    if (topHooks.length > 0 || avoidHooks.length > 0) {
+      memoryContext = `\n\nMEMORY RECOMMENDATIONS (dari performa clips sebelumnya):
+${topHooks.length > 0 ? `✅ Hook types yang perform bagus: ${topHooks.map(p => `${p.value} (weight: ${p.weight.toFixed(2)})`).join(', ')}` : ''}
+${topDurations.length > 0 ? `✅ Duration ranges yang perform bagus: ${topDurations.map(p => `${p.value} (weight: ${p.weight.toFixed(2)})`).join(', ')}` : ''}
+${avoidHooks.length > 0 ? `⚠️ Hook types yang kurang perform: ${avoidHooks.map(p => p.value).join(', ')}` : ''}
+
+Prioritaskan patterns yang perform bagus, hindari yang kurang perform.`;
+    }
+  } catch (err) {
+    logger.warn('Gagal load memory recommendations (non-fatal)', { agent: AGENT, error_message: err.message });
+  }
+
   // Build context for LLM
   const transcriptText = transcript.text.slice(0, 3000); // Limit to 3000 chars
   const transcriptSegments = transcript.segments.slice(0, 30).map((seg) => 
@@ -328,6 +349,7 @@ ${transcriptSegments}
 
 SCENE BOUNDARIES:
 ${sceneList}
+${memoryContext}
 
 TUGAS:
 Identifikasi 3-7 momen terbaik dari video ini yang bisa dijadikan clip Shorts (max 60 detik per clip).
