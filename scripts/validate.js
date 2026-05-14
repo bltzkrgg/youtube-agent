@@ -4,6 +4,8 @@
 /**
  * Validation script untuk AI Clipper
  * Validates config, DB schema, queue, dan schemas tanpa heavy processing
+ * 
+ * IMPORTANT: Jangan klaim production-ready tanpa E2E test evidence!
  */
 
 require('dotenv').config();
@@ -13,6 +15,8 @@ const logger = require('../src/utils/logger');
 const { getDb } = require('../src/utils/db');
 const { validate } = require('../src/schemas');
 const { v4: uuidv4 } = require('uuid');
+const { execSync } = require('child_process');
+const path = require('path');
 
 let errors = 0;
 let warnings = 0;
@@ -35,6 +39,31 @@ function section(title) {
   console.log(`\n${'='.repeat(60)}`);
   console.log(`  ${title}`);
   console.log(`${'='.repeat(60)}\n`);
+}
+
+// ─── 0. Syntax Check ──────────────────────────────────────────────────────────
+
+section('0. JavaScript Syntax Check');
+
+const criticalFiles = [
+  'src/config/index.js',
+  'src/utils/db.js',
+  'src/utils/queue.js',
+  'src/agents/source_ingest/index.js',
+  'src/agents/transcript/index.js',
+  'src/agents/scene_detect/index.js',
+  'src/agents/clip_planner/index.js',
+  'src/agents/clip_render/index.js',
+  'src/bot/telegram.js',
+];
+
+for (const file of criticalFiles) {
+  try {
+    execSync(`node --check ${file}`, { cwd: path.join(__dirname, '..'), stdio: 'pipe' });
+    success(`Syntax OK: ${file}`);
+  } catch (err) {
+    error(`Syntax error in ${file}: ${err.message}`);
+  }
 }
 
 // ─── 1. Validate Config/Env ──────────────────────────────────────────────────
@@ -308,6 +337,25 @@ try {
 } catch (err) {
   error(`Python script validation failed: ${err.message}`);
 }
+
+// ─── 7. Production Readiness Check ───────────────────────────────────────────
+
+section('7. Production Readiness Check');
+
+console.log('⚠️  IMPORTANT: Production-ready requires:');
+console.log('   1. ✅ npm run validate (this script) - passed');
+console.log('   2. ✅ npm run dry-run - passed');
+console.log('   3. ❓ Real E2E test with actual YouTube video - evidence required');
+console.log('   4. ❓ Copyright detection or legal disclaimer - required\n');
+
+warn('Real E2E test evidence not verified by this script');
+warn('Copyright compliance not verified by this script');
+
+console.log('📋 To claim production-ready, you MUST:');
+console.log('   - Run real E2E test with owned/licensed YouTube video');
+console.log('   - Document E2E test results (logs, output files, database rows)');
+console.log('   - Add copyright detection OR clear legal disclaimer');
+console.log('   - Update docs with actual test evidence\n');
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
 
