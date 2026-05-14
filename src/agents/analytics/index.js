@@ -79,13 +79,13 @@ async function _processCsv(csvPath, correlationId) {
         continue;
       }
 
-      // Try to match video by title or video_id
-      const video = _findVideo(data);
-      const videoId = video?.id || null;
+      // Try to match clip by title or clip_id
+      const clip = _findClip(data);
+      const clipId = clip?.id || null;
 
       insertAnalytics({
         id: uuidv4(),
-        video_id: videoId,
+        clip_id: clipId,
         views: data.views,
         likes: data.likes,
         comments: data.comments,
@@ -161,14 +161,20 @@ function _splitCsvLine(line, sep) {
   return result;
 }
 
-function _findVideo(data) {
+function _findClip(data) {
   const db = getDb();
   if (data.video_id) {
-    const v = db.prepare('SELECT id FROM videos WHERE id = ?').get(data.video_id);
-    if (v) return v;
+    // Try to match by clip_id first
+    const c = db.prepare('SELECT id FROM clips WHERE id = ?').get(data.video_id);
+    if (c) return c;
   }
   if (data.title) {
-    return db.prepare('SELECT id FROM videos WHERE title LIKE ?').get(`%${data.title.slice(0, 30)}%`);
+    // Try to match by source video title (clips inherit from source)
+    const source = db.prepare('SELECT id FROM source_videos WHERE video_title LIKE ?').get(`%${data.title.slice(0, 30)}%`);
+    if (source) {
+      // Return first approved clip from this source
+      return db.prepare("SELECT id FROM clips WHERE source_video_id = ? AND status = 'approved' LIMIT 1").get(source.id);
+    }
   }
   return null;
 }
@@ -186,7 +192,12 @@ async function _processMockAnalytics(job) {
   for (const row of mockRows) {
     insertAnalytics({
       id: uuidv4(),
-      ...row,
+      clip_id: null,
+      views: row.views,
+      likes: row.likes,
+      comments: row.comments,
+      ctr: row.ctr,
+      avg_view_pct: row.avg_view_pct,
       recorded_at: new Date().toISOString(),
     });
   }

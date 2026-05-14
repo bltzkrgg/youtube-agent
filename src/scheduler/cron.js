@@ -146,9 +146,9 @@ function initScheduler() {
 async function _runCleanup() {
   logger.info('Menjalankan cleanup mingguan', { agent: AGENT });
   try {
-    const { cleanupRejectedVideos } = require('../utils/storage');
+    const { cleanupRejectedClips } = require('../utils/storage');
     const { getDb } = require('../utils/db');
-    cleanupRejectedVideos(getDb());
+    cleanupRejectedClips(getDb());
     logger.info('Cleanup selesai', { agent: AGENT });
   } catch (err) {
     logger.error('Cleanup gagal', { agent: AGENT, error_message: err.message });
