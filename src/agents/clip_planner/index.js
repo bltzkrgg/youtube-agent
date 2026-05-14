@@ -108,8 +108,44 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
     throw new Error('LLM tidak menghasilkan clip plan valid');
   }
 
+  // Validate and sanitize clip plans
+  const validatedPlans = clipPlans.filter(plan => {
+    // Validate required fields
+    if (typeof plan.start_sec !== 'number' || typeof plan.end_sec !== 'number') {
+      logger.warn('Clip plan missing start_sec/end_sec, skipped', { agent: AGENT, plan });
+      return false;
+    }
+    
+    // Validate duration
+    const duration = plan.end_sec - plan.start_sec;
+    if (duration < 10 || duration > 60) {
+      logger.warn(`Clip duration ${duration}s out of range (10-60s), skipped`, { agent: AGENT, plan });
+      return false;
+    }
+    
+    // Validate score
+    if (typeof plan.score !== 'number' || plan.score < 0 || plan.score > 100) {
+      logger.warn(`Invalid score ${plan.score}, defaulting to 50`, { agent: AGENT, plan });
+      plan.score = 50;
+    }
+    
+    // Ensure required string fields
+    plan.hook_type = plan.hook_type || 'unknown';
+    plan.caption_plan = plan.caption_plan || 'Default caption';
+    plan.reframe_strategy = plan.reframe_strategy || 'center';
+    plan.risk_notes = plan.risk_notes || null;
+    
+    return true;
+  });
+
+  if (validatedPlans.length === 0) {
+    throw new Error('Semua clip plans tidak valid setelah validasi');
+  }
+
+  logger.info(`${validatedPlans.length} valid clips dari ${clipPlans.length} plans`, { agent: AGENT });
+
   // Assign clip_id to each plan
-  const clipsWithId = clipPlans.map((plan) => ({
+  const clipsWithId = validatedPlans.map((plan) => ({
     clip_id: uuidv4(),
     ...plan,
     duration_sec: plan.end_sec - plan.start_sec,
@@ -265,7 +301,7 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
 // ─── LLM Analysis ────────────────────────────────────────────────────────────
 
 async function _analyzeWithLLM(sourceIngest, transcript, sceneDetect) {
-  const model = config.openrouter.models.script; // Reuse script model for clip planning
+  const model = config.openrouter.models.clipPlanner; // Use clipPlanner model
 
   // Build context for LLM
   const transcriptText = transcript.text.slice(0, 3000); // Limit to 3000 chars

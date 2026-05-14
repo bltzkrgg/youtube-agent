@@ -39,8 +39,8 @@ async function generateCaptions(clipPlan, transcript) {
       { maxRetry: config.maxRetry, agent: AGENT, step: 'generateCaptionPlan' }
     );
 
-    // Build word-level captions with timing
-    const wordCaptions = _buildWordLevelCaptions(clipSegments, captionPlan);
+    // Build word-level captions with timing (relative to clip start)
+    const wordCaptions = _buildWordLevelCaptions(clipSegments, captionPlan, clipPlan.start_sec);
 
     return {
       caption_style: captionPlan.style,
@@ -145,7 +145,7 @@ Hanya JSON, tanpa teks lain.`;
 
 // ─── Build word-level captions ───────────────────────────────────────────────
 
-function _buildWordLevelCaptions(clipSegments, captionPlan) {
+function _buildWordLevelCaptions(clipSegments, captionPlan, clipStartSec) {
   const wordCaptions = [];
   const emphasisSet = new Set(captionPlan.emphasis_words.map(w => w.toLowerCase()));
   const maxWords = captionPlan.chunking.max_words_per_chunk || 3;
@@ -158,15 +158,19 @@ function _buildWordLevelCaptions(clipSegments, captionPlan) {
     // Chunk words
     for (let i = 0; i < words.length; i += maxWords) {
       const chunk = words.slice(i, i + maxWords);
-      const chunkStart = seg.start + (i * timePerWord);
-      const chunkEnd = seg.start + ((i + chunk.length) * timePerWord);
+      
+      // IMPORTANT: Make timestamps relative to clip start (not source video)
+      const absoluteStart = seg.start + (i * timePerWord);
+      const absoluteEnd = seg.start + ((i + chunk.length) * timePerWord);
+      const relativeStart = absoluteStart - clipStartSec;
+      const relativeEnd = absoluteEnd - clipStartSec;
 
       // Check if any word in chunk is emphasis
       const hasEmphasis = chunk.some(w => emphasisSet.has(w.toLowerCase().replace(/[.,!?]/g, '')));
 
       wordCaptions.push({
-        start: parseFloat(chunkStart.toFixed(2)),
-        end: parseFloat(chunkEnd.toFixed(2)),
+        start: parseFloat(Math.max(0, relativeStart).toFixed(2)), // Ensure non-negative
+        end: parseFloat(Math.max(0, relativeEnd).toFixed(2)),
         text: chunk.join(' '),
         emphasis: hasEmphasis,
       });

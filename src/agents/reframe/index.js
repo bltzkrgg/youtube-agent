@@ -79,26 +79,30 @@ AVAILABLE STRATEGIES:
    - Use when: Talking head centered, minimal movement
    - Pros: Safe, works for most content
    - Cons: Might cut important side elements
+   - SUPPORTED: ✅ Fully implemented
 
 2. **face_track** - Track speaker's face
    - Use when: Single speaker, face is main focus
    - Pros: Keeps speaker in frame even if they move
-   - Cons: Requires face detection (fallback to center if fails)
+   - Cons: Requires face detection
+   - SUPPORTED: ⚠️ Fallback to center (face tracking not yet implemented)
 
 3. **action_follow** - Follow main action/object
    - Use when: Demo, tutorial, sports, action scenes
    - Pros: Keeps important action in frame
    - Cons: Complex, might be jerky
+   - SUPPORTED: ⚠️ Fallback to center (motion tracking not yet implemented)
 
 4. **zoom_in** - Progressive zoom for emphasis
    - Use when: Dramatic moment, climax, reveal
    - Pros: Adds visual interest, emphasizes emotion
    - Cons: Might crop too much
+   - SUPPORTED: ✅ Implemented via FFmpeg zoompan filter
 
-5. **split_screen** - Multiple subjects side by side
-   - Use when: Interview, debate, comparison
-   - Pros: Shows multiple people/objects
-   - Cons: Complex, might be too busy
+PENTING:
+- face_track dan action_follow akan fallback ke center (belum diimplementasi)
+- Prioritaskan center dan zoom_in untuk hasil terbaik
+- Jangan gunakan split_screen (tidak didukung renderer)
 
 KEYFRAMES (optional):
 Jika strategy berubah di tengah clip, specify keyframes:
@@ -144,17 +148,25 @@ Hanya JSON, tanpa teks lain.`;
     throw new Error('Invalid response dari ReframeAgent');
   }
 
-  // Validate strategy
-  const validStrategies = ['center', 'face_track', 'action_follow', 'zoom_in', 'split_screen'];
-  if (!validStrategies.includes(parsed.strategy)) {
+  // Validate strategy - only allow supported strategies
+  const validStrategies = ['center', 'zoom_in'];
+  const fallbackStrategies = ['face_track', 'action_follow']; // Will fallback to center
+  
+  if (!validStrategies.includes(parsed.strategy) && !fallbackStrategies.includes(parsed.strategy)) {
+    logger.warn(`Invalid strategy ${parsed.strategy}, fallback to center`, { agent: AGENT });
     parsed.strategy = 'center';
+  }
+  
+  // Warn if using fallback strategy
+  if (fallbackStrategies.includes(parsed.strategy)) {
+    logger.warn(`Strategy ${parsed.strategy} not yet implemented, will fallback to center in renderer`, { agent: AGENT });
   }
 
   return {
     strategy: parsed.strategy,
     reasoning: parsed.reasoning || 'No reasoning provided',
     keyframes: Array.isArray(parsed.keyframes) ? parsed.keyframes : [],
-    fallback_strategy: parsed.fallback_strategy || 'center',
+    fallback_strategy: 'center',
   };
 }
 
