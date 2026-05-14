@@ -1,7 +1,7 @@
 {
   "name": "youtube-agent",
   "version": "1.0.0",
-  "description": "Autonomous YouTube Shorts Creator untuk konten Fakta Unik Indonesia",
+  "description": "AI-powered YouTube Clipper - Extract viral clips from YouTube videos",
   "main": "src/index.js",
   "engines": {
     "node": ">=20.0.0"
@@ -9,7 +9,10 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "setup": "node scripts/setup.js"
+    "setup": "node scripts/setup.js",
+    "validate": "node scripts/validate.js",
+    "dry-run": "DRY_RUN=true node src/trigger_clipper.js https://youtube.com/watch?v=dQw4w9WgXcQ",
+    "test:config": "node scripts/validate.js"
   },
   "dependencies": {
     "@google/genai": "^2.0.1",
