@@ -2,6 +2,19 @@
 
 **AI-powered clipper** yang mengubah video YouTube panjang menjadi multiple viral Shorts clips (9:16) secara otomatis.
 
+## 🚦 Production Readiness Status
+
+**Current Status**: ⚠️ **STAGING-READY**
+
+- ✅ All P0/P1 bugs fixed (10-step systematic review)
+- ✅ Validation script available
+- ✅ Permission gate implemented
+- ✅ Idempotency implemented
+- ⚠️ **E2E testing required** (blocking for production)
+- ⚠️ **Copyright detection required** (blocking for production)
+
+📊 **Full Report**: [PRODUCTION_READINESS_REPORT.md](./PRODUCTION_READINESS_REPORT.md)
+
 ## 🎯 Apa yang Dilakukan Sistem Ini?
 
 1. **Input**: YouTube URL dari user
@@ -117,7 +130,16 @@ WHISPER_MODEL=base
 SCENE_DETECT_THRESHOLD=27.0
 ```
 
-### 3. Jalankan
+### 3. Validasi Setup
+
+```bash
+# Validate config, database, schemas, helpers
+npm run validate
+
+# Expected output: ✅ All checks passed
+```
+
+### 4. Jalankan
 
 ```bash
 # Start the agent (scheduler mode)
@@ -127,7 +149,7 @@ node src/index.js
 node src/trigger_clipper.js "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # DRY_RUN mode (mock data, no API calls)
-DRY_RUN=true node src/trigger_clipper.js "https://www.youtube.com/watch?v=VIDEO_ID"
+npm run dry-run
 ```
 
 ---
@@ -160,8 +182,23 @@ output/{source_video_id}/
 |---|---|
 | `/trigger <youtube_url>` | Trigger clipper untuk URL tertentu |
 | `/status` | Status semua clips (processing/approved/rejected) |
+| `/approve_source <id>` | **NEW**: Approve source video untuk rendering |
 | `/queue` | Jumlah job per type di queue |
 | `/help` | Daftar perintah |
+
+### Permission Gate Flow
+
+**Default behavior**: Source videos require manual approval sebelum rendering.
+
+1. Trigger clipper: `/trigger <youtube_url>`
+2. System downloads & analyzes video (transcript + scenes)
+3. System creates clip plans
+4. **Bot sends notification**: "Source video requires approval"
+5. User reviews source video
+6. User approves: `/approve_source <source_video_id>`
+7. System renders clips
+
+**Why?** Sistem tidak melakukan copyright check otomatis. User bertanggung jawab memastikan source video boleh di-clip.
 
 ### Review Buttons
 
@@ -288,11 +325,14 @@ pip install scenedetect[opencv]
 
 ## 🚨 Known Limitations
 
-1. **Copyright**: Sistem ini **TIDAK** melakukan copyright check. User bertanggung jawab memastikan source video boleh di-clip.
-2. **Face tracking**: Belum diimplementasi. Reframe strategy `face_track` fallback ke `center`.
-3. **Motion tracking**: Belum diimplementasi. Reframe strategy `action_follow` fallback ke `center`.
-4. **Subtitle timing**: Caption burn-in masih sederhana (static text). Untuk word-by-word timing, perlu integrasi dengan subtitle file.
-5. **Multi-speaker**: Whisper tidak membedakan speaker. Untuk podcast/interview, perlu diarization.
+1. **Copyright**: Sistem ini **TIDAK** melakukan copyright check otomatis. User bertanggung jawab memastikan source video boleh di-clip. Permission gate (`/approve_source`) adalah manual review, bukan automated detection.
+2. **E2E Testing**: Belum dilakukan testing dengan real YouTube videos. System tested dengan mock data only.
+3. **Face tracking**: Belum diimplementasi. Reframe strategy `face_track` fallback ke `center`.
+4. **Motion tracking**: Belum diimplementasi. Reframe strategy `action_follow` fallback ke `center`.
+5. **Subtitle timing**: Caption burn-in masih sederhana (static text). Untuk word-by-word timing, perlu integrasi dengan subtitle file.
+6. **Multi-speaker**: Whisper tidak membedakan speaker. Untuk podcast/interview, perlu diarization.
+
+**⚠️ IMPORTANT**: System adalah **STAGING-READY**, bukan production-ready. E2E testing dan copyright solution required sebelum production deployment.
 
 ---
 
@@ -313,6 +353,19 @@ Legacy tables (`videos`, `analytics` lama) tetap ada untuk backward compatibilit
 ---
 
 ## 📝 Development
+
+### Validation & Testing
+
+```bash
+# Validate config, database, schemas
+npm run validate
+
+# Dry-run with mock data (no API calls)
+npm run dry-run
+
+# Test config only
+npm run test:config
+```
 
 ### Run Tests (TODO)
 
