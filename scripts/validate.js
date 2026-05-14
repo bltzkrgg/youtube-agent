@@ -42,25 +42,40 @@ function section(title) {
 section('1. Config & Environment');
 
 try {
+  // In DRY_RUN mode, API keys are optional
+  const isDryRun = process.env.DRY_RUN === 'true' || config.dryRun;
+  
   if (!config.openrouter.apiKey) {
-    error('OPENROUTER_API_KEY tidak diset');
+    if (isDryRun) {
+      warn('OPENROUTER_API_KEY tidak diset (OK untuk DRY_RUN)');
+    } else {
+      error('OPENROUTER_API_KEY tidak diset');
+    }
   } else {
     success('OPENROUTER_API_KEY configured');
   }
 
   if (!config.telegram.botToken) {
-    error('TELEGRAM_BOT_TOKEN tidak diset');
+    if (isDryRun) {
+      warn('TELEGRAM_BOT_TOKEN tidak diset (OK untuk DRY_RUN)');
+    } else {
+      error('TELEGRAM_BOT_TOKEN tidak diset');
+    }
   } else {
     success('TELEGRAM_BOT_TOKEN configured');
   }
 
   if (!config.telegram.chatId) {
-    error('TELEGRAM_CHAT_ID tidak diset');
+    if (isDryRun) {
+      warn('TELEGRAM_CHAT_ID tidak diset (OK untuk DRY_RUN)');
+    } else {
+      error('TELEGRAM_CHAT_ID tidak diset');
+    }
   } else {
     success('TELEGRAM_CHAT_ID configured');
   }
 
-  success(`DRY_RUN mode: ${config.dryRun}`);
+  success(`DRY_RUN mode: ${isDryRun}`);
   success(`Max retry: ${config.maxRetry}`);
   success(`Output dir: ${config.paths.output}`);
   success(`Database: ${config.paths.db}`);

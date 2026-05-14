@@ -4,11 +4,14 @@ require('dotenv').config();
 const path = require('path');
 
 // Validate required env vars at startup
-const REQUIRED = [
-  'OPENROUTER_API_KEY',
-  'TELEGRAM_BOT_TOKEN',
-  'TELEGRAM_CHAT_ID',
-];
+const REQUIRED = [];
+
+// In DRY_RUN mode, API keys are optional
+if (process.env.DRY_RUN !== 'true') {
+  REQUIRED.push('OPENROUTER_API_KEY');
+  REQUIRED.push('TELEGRAM_BOT_TOKEN');
+  REQUIRED.push('TELEGRAM_CHAT_ID');
+}
 
 // YouTube API is optional for clipper (only needed for legacy research agent)
 // if (process.env.DRY_RUN !== 'true') {
