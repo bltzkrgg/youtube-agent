@@ -64,7 +64,7 @@ const ClipPlan = z.object({
   hook_type: z.string(),
   reason: z.string(),
   caption_plan: z.string(),
-  reframe_strategy: z.enum(['center', 'face_track', 'action_follow']).default('center'),
+  reframe_strategy: z.enum(['center', 'zoom_in', 'face_track', 'action_follow']).default('center'),
   risk_notes: z.string().optional(),
 });
 
@@ -262,7 +262,7 @@ const OpenRouterClipPlansResponse = z.object({
     hook_type: z.string(),
     reason: z.string(),
     caption_plan: z.string(),
-    reframe_strategy: z.enum(['center', 'face_track', 'action_follow']).default('center'),
+    reframe_strategy: z.enum(['center', 'zoom_in', 'face_track', 'action_follow']).default('center'),
     risk_notes: z.string().optional(),
   })).min(1).max(10),
 });
