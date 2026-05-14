@@ -44,16 +44,22 @@ async function runClipPlannerAgent() {
     ackJob(job.id);
     logger.info('Clip Planner Agent selesai', { agent: AGENT, sourceVideoId: source_video_id, clipCount: result.clips.length });
 
-    // Spawn clip render jobs for each planned clip
-    for (const clip of result.clips) {
-      pushJob('clip_render', { 
-        clip_id: clip.clip_id,
-        source_video_id, 
-        correlation_id: result.correlation_id 
-      }, {
-        correlationId: result.correlation_id,
-        priority: 'normal',
-      });
+    // Spawn clip render jobs ONLY for newly inserted clips
+    // result.insertedClipIds contains only clips that were actually inserted
+    if (result.insertedClipIds && result.insertedClipIds.length > 0) {
+      for (const clipId of result.insertedClipIds) {
+        pushJob('clip_render', { 
+          clip_id: clipId,
+          source_video_id, 
+          correlation_id: result.correlation_id 
+        }, {
+          correlationId: result.correlation_id,
+          priority: 'normal',
+        });
+      }
+      logger.info(`Pushed ${result.insertedClipIds.length} clip_render jobs`, { agent: AGENT });
+    } else {
+      logger.info('No new clips to render (all duplicates)', { agent: AGENT });
     }
   } catch (err) {
     logger.error('Clip Planner Agent gagal', {
@@ -277,6 +283,7 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
   const { getExistingClip } = require('../../utils/db');
   let insertedCount = 0;
   let skippedCount = 0;
+  const insertedClipIds = []; // Track inserted clip IDs
 
   for (const clip of data.clips) {
     // IDEMPOTENCY: Check if clip already exists
@@ -322,11 +329,16 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
       updated_at: new Date().toISOString(),
     });
     insertedCount++;
+    insertedClipIds.push(clip.clip_id); // Track inserted clip ID
   }
 
   logger.info(`Clips inserted: ${insertedCount}, skipped (duplicate): ${skippedCount}`, { agent: AGENT });
 
-  return data;
+  // Return data with insertedClipIds
+  return {
+    ...data,
+    insertedClipIds, // Add list of inserted clip IDs
+  };
 }
 
 // ─── LLM Analysis ────────────────────────────────────────────────────────────
