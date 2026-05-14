@@ -128,8 +128,10 @@ function runMigrations(db) {
     CREATE INDEX IF NOT EXISTS idx_jobs_status           ON jobs(status, priority DESC, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_jobs_type             ON jobs(type, status);
     CREATE INDEX IF NOT EXISTS idx_source_videos_status  ON source_videos(status);
+    CREATE INDEX IF NOT EXISTS idx_source_videos_url     ON source_videos(source_url);
     CREATE INDEX IF NOT EXISTS idx_clips_source          ON clips(source_video_id);
     CREATE INDEX IF NOT EXISTS idx_clips_status          ON clips(status);
+    CREATE INDEX IF NOT EXISTS idx_clips_unique          ON clips(source_video_id, start_sec, end_sec);
     CREATE INDEX IF NOT EXISTS idx_memory_pattern        ON memory(pattern_type, pattern_value);
   `);
 
@@ -349,6 +351,16 @@ function getClipsBySourceVideo(sourceVideoId) {
   return getDb().prepare('SELECT * FROM clips WHERE source_video_id = ? ORDER BY score DESC').all(sourceVideoId);
 }
 
+function getExistingClip(sourceVideoId, startSec, endSec) {
+  return getDb().prepare(`
+    SELECT * FROM clips 
+    WHERE source_video_id = ? 
+      AND ABS(start_sec - ?) < 0.5 
+      AND ABS(end_sec - ?) < 0.5
+    LIMIT 1
+  `).get(sourceVideoId, startSec, endSec);
+}
+
 // ─── Videos (legacy - keep for backward compatibility) ──────────────────────
 
 function insertVideo(video) {
@@ -441,7 +453,7 @@ module.exports = {
   // Source Videos
   insertSourceVideo, updateSourceVideo, getSourceVideo, getSourceVideoByCorrelation,
   // Clips
-  insertClip, updateClip, getClip, getClipsBySourceVideo,
+  insertClip, updateClip, getClip, getClipsBySourceVideo, getExistingClip,
   // Videos (legacy)
   insertVideo, updateVideo, getVideo, getVideoByCorrelation,
   // Memory

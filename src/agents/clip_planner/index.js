@@ -273,8 +273,25 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
 
   writeVideoJson(sourceVideoId, 'clip_planner.json', data);
 
-  // Insert clips into database
+  // Insert clips into database (with duplicate check)
+  const { getExistingClip } = require('../../utils/db');
+  let insertedCount = 0;
+  let skippedCount = 0;
+
   for (const clip of data.clips) {
+    // IDEMPOTENCY: Check if clip already exists
+    const existing = getExistingClip(sourceVideoId, clip.start_sec, clip.end_sec);
+    if (existing) {
+      logger.info('Clip sudah ada, skip insert', {
+        agent: AGENT,
+        existingClipId: existing.id,
+        startSec: clip.start_sec,
+        endSec: clip.end_sec,
+      });
+      skippedCount++;
+      continue;
+    }
+
     // Generate metadata for clip
     const clipTitle = `${sourceIngest.video_title} - ${clip.hook_type} clip`;
     const clipDescription = `Clip dari: ${sourceIngest.video_title}\nChannel: ${sourceIngest.channel_title}\nDuration: ${clip.duration_sec.toFixed(1)}s\n\n${clip.reason}`;
@@ -304,7 +321,10 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    insertedCount++;
   }
+
+  logger.info(`Clips inserted: ${insertedCount}, skipped (duplicate): ${skippedCount}`, { agent: AGENT });
 
   return data;
 }
