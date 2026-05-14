@@ -601,7 +601,8 @@ async function _handleDocumentUpload(msg) {
 
 async function _handleApproveSource(chatId, sourceVideoId) {
   try {
-    const { getSourceVideo, updateSourceVideo } = require('../utils/db');
+    const { getSourceVideo, updateSourceVideo, getClipsBySourceVideo } = require('../utils/db');
+    const { pushJob } = require('../utils/queue');
     const sourceVideo = getSourceVideo(sourceVideoId);
 
     if (!sourceVideo) {
@@ -618,16 +619,38 @@ async function _handleApproveSource(chatId, sourceVideoId) {
       risk_notes: 'Manually approved by user via Telegram',
     });
 
+    // Re-enqueue clips that were blocked by permission gate
+    const clips = getClipsBySourceVideo(sourceVideoId);
+    const manualReviewClips = clips.filter(c => c.status === 'manual_review');
+    
+    let reEnqueuedCount = 0;
+    for (const clip of manualReviewClips) {
+      pushJob('clip_render', {
+        clip_id: clip.id,
+        source_video_id: sourceVideoId,
+        correlation_id: clip.correlation_id,
+      }, {
+        correlationId: clip.correlation_id,
+        priority: 'normal',
+      });
+      reEnqueuedCount++;
+    }
+
     await bot.sendMessage(chatId,
       `✅ Source video disetujui\\!\n\n` +
       `ID: \`${_escape(sourceVideoId)}\`\n` +
       `Title: ${_escape(sourceVideo.video_title || 'N/A')}\n` +
       `Channel: ${_escape(sourceVideo.channel_title || 'N/A')}\n\n` +
-      `Clips dari source ini sekarang bisa dirender\\.`,
+      `Clips dari source ini sekarang bisa dirender\\.\n` +
+      `Re\\-enqueued ${reEnqueuedCount} clip\\(s\\) untuk rendering\\.`,
       { parse_mode: 'MarkdownV2' }
     );
 
-    logger.info('Source video approved via Telegram', { agent: AGENT, sourceVideoId });
+    logger.info('Source video approved via Telegram', { 
+      agent: AGENT, 
+      sourceVideoId,
+      reEnqueuedClips: reEnqueuedCount,
+    });
   } catch (err) {
     logger.error('Gagal approve source', { agent: AGENT, error_message: err.message });
     await bot.sendMessage(chatId, `❌ Error: ${_escape(err.message)}`,

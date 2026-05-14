@@ -43,11 +43,22 @@ async function runClipRenderAgent() {
     ackJob(job.id);
     logger.info('Clip Render Agent selesai', { agent: AGENT, clipId: clip_id });
 
-    // Next: Telegram review
-    pushJob('telegram_clip', { clip_id, source_video_id, correlation_id: result.correlation_id }, {
-      correlationId: result.correlation_id,
-      priority: 'high',
-    });
+    // Next: Telegram review ONLY if render succeeded (not blocked/skipped)
+    if (!result.blocked && !result.skipped) {
+      pushJob('telegram_clip', { clip_id, source_video_id, correlation_id: result.correlation_id }, {
+        correlationId: result.correlation_id,
+        priority: 'high',
+      });
+      logger.info('Pushed telegram_clip job for review', { agent: AGENT, clipId: clip_id });
+    } else {
+      logger.info('Skipped telegram_clip job (render blocked or skipped)', { 
+        agent: AGENT, 
+        clipId: clip_id,
+        blocked: result.blocked,
+        skipped: result.skipped,
+        reason: result.reason,
+      });
+    }
   } catch (err) {
     logger.error('Clip Render Agent gagal', {
       agent: AGENT, step: 'runClipRenderAgent',
