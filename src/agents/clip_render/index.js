@@ -88,6 +88,56 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
     };
   }
 
+  // PERMISSION GATE: Check if source video allowed to clip
+  const { getSourceVideo } = require('../../utils/db');
+  const sourceVideo = getSourceVideo(sourceVideoId);
+  
+  if (!sourceVideo) {
+    throw new Error(`Source video ${sourceVideoId} tidak ditemukan di database`);
+  }
+
+  if (!sourceVideo.allowed_to_clip || sourceVideo.allowed_to_clip === 0) {
+    logger.warn('Source video tidak diizinkan untuk di-clip (permission gate)', {
+      agent: AGENT,
+      sourceVideoId,
+      clipId,
+      permissionStatus: sourceVideo.permission_status,
+      riskLevel: sourceVideo.risk_level,
+      riskNotes: sourceVideo.risk_notes,
+    });
+
+    // Update clip status to manual_review
+    updateClip(clipId, {
+      status: 'manual_review',
+      risk_notes: `Permission gate: ${sourceVideo.risk_notes || 'Source not allowed to clip'}`,
+    });
+
+    // Send notification to Telegram if available
+    try {
+      const { notify } = require('../../bot/telegram');
+      await notify(
+        `⚠️ Clip ${clipId} memerlukan manual review\n\n` +
+        `Source: ${sourceVideo.video_title}\n` +
+        `Channel: ${sourceVideo.channel_title}\n` +
+        `Permission: ${sourceVideo.permission_status}\n` +
+        `Risk: ${sourceVideo.risk_level}\n\n` +
+        `${sourceVideo.risk_notes}\n\n` +
+        `Gunakan /approve_source ${sourceVideoId} untuk mengizinkan.`
+      );
+    } catch (notifyErr) {
+      logger.warn('Gagal kirim notifikasi Telegram', { agent: AGENT, error: notifyErr.message });
+    }
+
+    return {
+      clip_id: clipId,
+      source_video_id: sourceVideoId,
+      correlation_id: correlationId,
+      status: 'manual_review',
+      blocked: true,
+      reason: 'Permission gate: source not allowed to clip',
+    };
+  }
+
   const videoDir = getVideoDir(sourceVideoId);
   const clipDir = path.join(videoDir, 'clips', clipId);
   fs.mkdirSync(clipDir, { recursive: true });

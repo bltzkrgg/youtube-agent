@@ -531,6 +531,15 @@ async function _handleCommand(chatId, text, msg) {
       }
       break;
 
+    case '/approve_source':
+      if (args.length > 0) {
+        await _handleApproveSource(chatId, args[0]);
+      } else {
+        await bot.sendMessage(chatId, '⚠️ Usage: /approve\\_source <source\\_video\\_id>',
+          { parse_mode: 'MarkdownV2' });
+      }
+      break;
+
     default:
       await bot.sendMessage(chatId, `❓ Perintah tidak dikenal: ${_escape(cmd)}`,
         { parse_mode: 'MarkdownV2' });
@@ -579,12 +588,49 @@ async function _handleDocumentUpload(msg) {
 
 // ─── Info messages ────────────────────────────────────────────────────────────
 
+async function _handleApproveSource(chatId, sourceVideoId) {
+  try {
+    const { getSourceVideo, updateSourceVideo } = require('../utils/db');
+    const sourceVideo = getSourceVideo(sourceVideoId);
+
+    if (!sourceVideo) {
+      await bot.sendMessage(chatId, `❌ Source video tidak ditemukan: \`${_escape(sourceVideoId)}\``,
+        { parse_mode: 'MarkdownV2' });
+      return;
+    }
+
+    // Update permission
+    updateSourceVideo(sourceVideoId, {
+      permission_status: 'approved',
+      allowed_to_clip: 1,
+      risk_level: 'low',
+      risk_notes: 'Manually approved by user via Telegram',
+    });
+
+    await bot.sendMessage(chatId,
+      `✅ Source video disetujui\\!\n\n` +
+      `ID: \`${_escape(sourceVideoId)}\`\n` +
+      `Title: ${_escape(sourceVideo.video_title || 'N/A')}\n` +
+      `Channel: ${_escape(sourceVideo.channel_title || 'N/A')}\n\n` +
+      `Clips dari source ini sekarang bisa dirender\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+
+    logger.info('Source video approved via Telegram', { agent: AGENT, sourceVideoId });
+  } catch (err) {
+    logger.error('Gagal approve source', { agent: AGENT, error_message: err.message });
+    await bot.sendMessage(chatId, `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' });
+  }
+}
+
 async function _sendHelp(chatId) {
   const msg = `🤖 *YouTube AI Clipper*\n\n` +
     `Pilih menu di bawah ini:\n\n` +
     `Commands:\n` +
     `/trigger \\- Start clipper pipeline\n` +
     `/status \\- Check clips status\n` +
+    `/approve\\_source <id> \\- Approve source video\n` +
     `/queue \\- Check queue stats\n` +
     `/help \\- Show this message`;
 
