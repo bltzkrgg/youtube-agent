@@ -57,13 +57,16 @@ async function _processSourceIngest(job) {
   if (!sourceUrl) throw new Error('source_url tidak ada di payload');
 
   // IDEMPOTENCY: Check if source URL already processed
-  const { getDb } = require('../../utils/db');
+  const { getDb, updateSourceVideo } = require('../../utils/db');
   const existing = getDb().prepare(`
     SELECT id, status FROM source_videos 
     WHERE source_url = ? 
     ORDER BY created_at DESC 
     LIMIT 1
   `).get(sourceUrl);
+
+  let sourceVideoId;
+  let isRetry = false;
 
   if (existing) {
     if (existing.status === 'processing' || existing.status === 'completed') {
@@ -79,15 +82,30 @@ async function _processSourceIngest(job) {
         skipped: true,
       };
     }
-    // If failed, allow retry with new ID
-    logger.info('Source URL pernah gagal, retry dengan ID baru', { 
-      agent: AGENT, 
-      sourceUrl, 
-      previousId: existing.id 
-    });
+    
+    // If failed, reuse existing ID and retry
+    if (existing.status === 'failed') {
+      sourceVideoId = existing.id;
+      isRetry = true;
+      logger.info('Source URL pernah gagal, retry dengan ID yang sama', { 
+        agent: AGENT, 
+        sourceUrl, 
+        sourceVideoId,
+        previousStatus: existing.status,
+      });
+      
+      // Update status to processing and clear previous errors
+      updateSourceVideo(sourceVideoId, {
+        status: 'processing',
+        risk_notes: 'Retrying download',
+      });
+    }
   }
 
-  const sourceVideoId = uuidv4();
+  if (!sourceVideoId) {
+    sourceVideoId = uuidv4();
+  }
+
   const videoDir = getVideoDir(sourceVideoId);
 
   if (config.dryRun) return _mockSourceIngest(sourceVideoId, correlationId, sourceUrl, videoDir);
@@ -103,27 +121,39 @@ async function _processSourceIngest(job) {
   if (!downloadResult.success) {
     // Mark source as failed
     const { updateSourceVideo } = require('../../utils/db');
-    try {
-      insertSourceVideo({
-        id: sourceVideoId,
-        correlation_id: correlationId,
-        source_url: sourceUrl,
-        source_video_path: null,
-        source_duration: null,
-        channel_title: null,
-        video_title: null,
-        description: null,
-        permission_status: 'unknown',
-        allowed_to_clip: 0,
-        risk_level: 'manual_review',
-        risk_notes: 'Download failed',
+    
+    if (isRetry) {
+      // Update existing record
+      updateSourceVideo(sourceVideoId, {
         status: 'failed',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        risk_notes: `Download failed: ${downloadResult.error}`,
       });
-    } catch (e) {
-      // Ignore if already exists
+    } else {
+      // Insert new failed record
+      try {
+        insertSourceVideo({
+          id: sourceVideoId,
+          correlation_id: correlationId,
+          source_url: sourceUrl,
+          source_video_path: null,
+          source_duration: null,
+          channel_title: null,
+          video_title: null,
+          description: null,
+          permission_status: 'unknown',
+          allowed_to_clip: 0,
+          risk_level: 'manual_review',
+          risk_notes: `Download failed: ${downloadResult.error}`,
+          status: 'failed',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      } catch (e) {
+        // Ignore if already exists (race condition)
+        logger.warn('Failed to insert failed source record', { agent: AGENT, error: e.message });
+      }
     }
+    
     throw new Error(`Download gagal: ${downloadResult.error}`);
   }
 
@@ -148,53 +178,66 @@ async function _processSourceIngest(job) {
 
   writeVideoJson(sourceVideoId, 'source_ingest.json', data);
   
-  // Default permission/risk settings
-  const defaultPermission = {
-    permission_status: 'unknown',
-    allowed_to_clip: 0,
-    risk_level: 'manual_review',
-    risk_notes: 'Source permission not verified',
-  };
-  
-  // Insert with UNIQUE constraint handling
-  try {
-    insertSourceVideo({
-      id: sourceVideoId,
-      correlation_id: correlationId,
-      source_url: sourceUrl,
+  // Insert or update source_videos
+  if (isRetry) {
+    // Update existing record
+    const { updateSourceVideo } = require('../../utils/db');
+    updateSourceVideo(sourceVideoId, {
       source_video_path: videoPath,
       source_duration: metadata.duration,
       channel_title: metadata.channel,
       video_title: metadata.title,
       description: metadata.description,
-      ...defaultPermission,
+      permission_status: 'unknown',
+      allowed_to_clip: 0,
+      risk_level: 'manual_review',
+      risk_notes: 'Source permission not verified',
       status: 'processing',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
     });
-  } catch (insertErr) {
-    // Handle UNIQUE constraint violation (concurrent insert)
-    if (insertErr.message && insertErr.message.includes('UNIQUE constraint')) {
-      logger.warn('Concurrent insert detected, using existing source_video', {
-        agent: AGENT,
-        sourceUrl,
-        error: insertErr.message,
+  } else {
+    // Insert new record with UNIQUE constraint handling
+    try {
+      insertSourceVideo({
+        id: sourceVideoId,
+        correlation_id: correlationId,
+        source_url: sourceUrl,
+        source_video_path: videoPath,
+        source_duration: metadata.duration,
+        channel_title: metadata.channel,
+        video_title: metadata.title,
+        description: metadata.description,
+        permission_status: 'unknown',
+        allowed_to_clip: 0,
+        risk_level: 'manual_review',
+        risk_notes: 'Source permission not verified',
+        status: 'processing',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
-      // Re-check for existing source_video
-      const { getDb } = require('../../utils/db');
-      const existing = getDb().prepare(`
-        SELECT id FROM source_videos WHERE source_url = ? LIMIT 1
-      `).get(sourceUrl);
-      if (existing) {
-        return {
-          source_video_id: existing.id,
-          correlation_id: correlationId,
-          skipped: true,
-          reason: 'concurrent_insert',
-        };
+    } catch (insertErr) {
+      // Handle UNIQUE constraint violation (concurrent insert)
+      if (insertErr.message && insertErr.message.includes('UNIQUE constraint')) {
+        logger.warn('Concurrent insert detected, using existing source_video', {
+          agent: AGENT,
+          sourceUrl,
+          error: insertErr.message,
+        });
+        // Re-check for existing source_video
+        const { getDb } = require('../../utils/db');
+        const existing = getDb().prepare(`
+          SELECT id FROM source_videos WHERE source_url = ? LIMIT 1
+        `).get(sourceUrl);
+        if (existing) {
+          return {
+            source_video_id: existing.id,
+            correlation_id: correlationId,
+            skipped: true,
+            reason: 'concurrent_insert',
+          };
+        }
       }
+      throw insertErr;
     }
-    throw insertErr;
   }
 
   return data;
