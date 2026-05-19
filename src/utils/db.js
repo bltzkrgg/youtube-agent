@@ -274,11 +274,17 @@ function moveToDeadLetter(job, errorMsg) {
 
 function hardResetDatabase() {
   const db = getDb();
+  // New clipper tables
   try { db.prepare('DELETE FROM jobs').run(); } catch(e) {}
+  try { db.prepare('DELETE FROM dead_letter').run(); } catch(e) {}
+  try { db.prepare('DELETE FROM analytics').run(); } catch(e) {}
+  try { db.prepare('DELETE FROM memory').run(); } catch(e) {}
+  try { db.prepare('DELETE FROM clips').run(); } catch(e) {}
+  try { db.prepare('DELETE FROM source_videos').run(); } catch(e) {}
+  // Legacy tables (safe with try/catch)
   try { db.prepare('DELETE FROM videos').run(); } catch(e) {}
   try { db.prepare('DELETE FROM metadata').run(); } catch(e) {}
   try { db.prepare('DELETE FROM scripts').run(); } catch(e) {}
-  try { db.prepare('DELETE FROM dead_letter').run(); } catch(e) {}
   try { db.prepare('VACUUM').run(); } catch(e) {}
 }
 

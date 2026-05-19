@@ -123,20 +123,22 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
       risk_notes: `Permission gate: ${sourceVideo.risk_notes || 'Source not allowed to clip'}`,
     });
 
-    // Send notification to Telegram if available
-    try {
-      const { notify } = require('../../bot/telegram');
-      await notify(
-        `⚠️ Clip ${clipId} memerlukan manual review\n\n` +
-        `Source: ${sourceVideo.video_title}\n` +
-        `Channel: ${sourceVideo.channel_title}\n` +
-        `Permission: ${sourceVideo.permission_status}\n` +
-        `Risk: ${sourceVideo.risk_level}\n\n` +
-        `${sourceVideo.risk_notes}\n\n` +
-        `Gunakan /approve_source ${sourceVideoId} untuk mengizinkan.`
-      );
-    } catch (notifyErr) {
-      logger.warn('Gagal kirim notifikasi Telegram', { agent: AGENT, error: notifyErr.message });
+    // Send notification to Telegram if available (skip in DRY_RUN)
+    if (!config.dryRun) {
+      try {
+        const { notify } = require('../../bot/telegram');
+        await notify(
+          `⚠️ Clip ${clipId} memerlukan manual review\n\n` +
+          `Source: ${sourceVideo.video_title}\n` +
+          `Channel: ${sourceVideo.channel_title}\n` +
+          `Permission: ${sourceVideo.permission_status}\n` +
+          `Risk: ${sourceVideo.risk_level}\n\n` +
+          `${sourceVideo.risk_notes}\n\n` +
+          `Gunakan /approve_source ${sourceVideoId} untuk mengizinkan.`
+        );
+      } catch (notifyErr) {
+        logger.warn('Gagal kirim notifikasi Telegram', { agent: AGENT, error: notifyErr.message });
+      }
     }
 
     return {
