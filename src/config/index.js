@@ -4,16 +4,19 @@ require('dotenv').config();
 const path = require('path');
 
 // Validate required env vars at startup
-const REQUIRED = [
-  'OPENROUTER_API_KEY',
-  'TELEGRAM_BOT_TOKEN',
-  'TELEGRAM_CHAT_ID',
-  'YOUTUBE_API_KEY',
-];
+const REQUIRED = [];
 
+// In DRY_RUN mode, API keys are optional
 if (process.env.DRY_RUN !== 'true') {
-  REQUIRED.push('GOOGLE_API_KEY');
+  REQUIRED.push('OPENROUTER_API_KEY');
+  REQUIRED.push('TELEGRAM_BOT_TOKEN');
+  REQUIRED.push('TELEGRAM_CHAT_ID');
 }
+
+// YouTube API is optional for clipper (only needed for legacy research agent)
+// if (process.env.DRY_RUN !== 'true') {
+//   REQUIRED.push('YOUTUBE_API_KEY');
+// }
 
 for (const key of REQUIRED) {
   if (!process.env[key]) {
@@ -38,26 +41,29 @@ const config = {
       research:      process.env.RESEARCH_MODEL       || DEFAULT_MODEL,
       script:        process.env.SCRIPT_MODEL         || DEFAULT_MODEL,
       metadata:      process.env.METADATA_MODEL       || DEFAULT_MODEL,
-      visualPrompt:  process.env.VISUAL_PROMPT_MODEL  || DEFAULT_MODEL,
+      clipPlanner:   process.env.CLIP_PLANNER_MODEL   || DEFAULT_MODEL,
     },
   },
 
-  // YouTube Data API v3
+  // YouTube Data API v3 (optional, only for legacy research agent)
   youtube: {
-    apiKey: process.env.YOUTUBE_API_KEY,
+    apiKey: process.env.YOUTUBE_API_KEY || null,
   },
 
-  // Edge TTS (voiceover)
-  tts: {
-    voice: process.env.TTS_VOICE || 'id-ID-ArdiNeural',
-    rate:  process.env.TTS_RATE  || '+0%',
+  // yt-dlp config
+  ytdlp: {
+    format: process.env.YTDLP_FORMAT || 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+    cookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER || null, // e.g., 'chrome', 'firefox'
   },
 
-  // Google AI Studio (AI video generation)
-  // Catatan: veo-2.0 mewajibkan akun GCP dengan billing aktif. Gunakan veo-1.0 untuk tier gratis.
-  google: {
-    apiKey: process.env.GOOGLE_API_KEY,
-    model:  process.env.GOOGLE_VIDEO_MODEL || 'veo-1.0',
+  // Whisper config
+  whisper: {
+    model: process.env.WHISPER_MODEL || 'base', // tiny, base, small, medium, large
+  },
+
+  // Scene detection config
+  sceneDetect: {
+    threshold: parseFloat(process.env.SCENE_DETECT_THRESHOLD || '27.0'),
   },
 
   // Telegram

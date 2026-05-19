@@ -1,91 +1,82 @@
-# YouTube Shorts AI Agent
+# YouTube AI Clipper Agent
 
-Autonomous pipeline untuk generate konten **Fakta Unik Indonesia** di YouTube Shorts — fully AI-generated, zero copyright risk.
+**AI-powered clipper** yang mengubah video YouTube panjang menjadi multiple viral Shorts clips (9:16) secara otomatis.
 
-## Pipeline
+## 🚦 Production Readiness Status
 
-```
-┌─────────────┐
-│  Research   │  YouTube Data API v3 (trending ID + niche search)
-│             │  → LLM analisis virality score (views/subscribers)
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│   Script    │  Narasi Gen-Z curiosity-gap (Hook → Buildup → Climax → Cliffhanger)
-│             │  → visual_prompts[] per segmen (maks 5 detik/klip) + SFX hints
-└──────┬──────┘
-       │ (parallel)
-  ┌────┴────┐
-  │         │
-┌─▼──────┐ ┌▼────────┐
-│Metadata│ │Voiceover│  edge-tts (id-ID-ArdiNeural, gratis)
-└─┬──────┘ └┬────────┘
-  └────┬────┘
-       │
-┌──────▼──────┐
-│   Visual    │  Prompt Engineer LLM → Veo-optimised prompt
-│             │  → Google Veo text-to-video (multi-klip per segmen)
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│    Clip     │  Python + FFmpeg:
-│             │  • Stitch footage_paths[] per segmen
-│             │  • Audio mix: voiceover + SFX stems + BGM (12%)
-│             │  • Output: 1080×1920, tanpa subtitle
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│  Telegram   │  Review: ✅ Approve / ❌ Reject / 🎨 Visual Buruk / 😴 Topik Garing
-│             │  → Reject terstruktur kirim feedback ke Memory Agent
-└──────┬──────┘
-       │ Approve
-┌──────▼──────┐
-│  Analytics  │  Input CSV dari YouTube Studio (manual upload ke bot)
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│   Memory    │  Update weight topik dari analytics
-│             │  + Penalti instan saat reject (near-realtime, poll 1 menit)
-└─────────────┘
-```
+**Current Status**: ⚠️ **STAGING-READY**
 
-## Stack
+- ✅ All P0/P1 bugs fixed (10-step systematic review)
+- ✅ Validation script available
+- ✅ Permission gate implemented
+- ✅ Idempotency implemented
+- ⚠️ **E2E testing required** (blocking for production)
+- ⚠️ **Copyright detection required** (blocking for production)
 
-| Komponen | Teknologi |
-|---|---|
-| Orchestrator & queue | Node.js v20 + SQLite |
-| Video assembly | Python 3.11 + FFmpeg |
-| Trend discovery | YouTube Data API v3 |
-| LLM — research | `RESEARCH_MODEL` via OpenRouter |
-| LLM — script | `SCRIPT_MODEL` via OpenRouter |
-| LLM — metadata | `METADATA_MODEL` via OpenRouter |
-| LLM — visual prompt engineer | `VISUAL_PROMPT_MODEL` via OpenRouter |
-| Text-to-speech | edge-tts (Microsoft, gratis) |
-| AI video generation | Google AI Studio — Veo text-to-video (multi-klip) |
-| Audio mixing | FFmpeg amix (voiceover + SFX + BGM) |
-| Review & delivery | Telegram Bot |
-| Adaptive memory | SQLite weight system + rejection feedback |
+📊 **Full Report**: [PRODUCTION_READINESS_REPORT.md](./PRODUCTION_READINESS_REPORT.md)
 
-## Estimasi Biaya Bulanan
+## 🎯 Apa yang Dilakukan Sistem Ini?
 
-| Skenario | Video/hari | Estimasi |
-|---|---|---|
-| Minimal | 1 | ~$1.50 |
-| Target | 2 | ~$3.00 |
-| Agresif | 3 | ~$4.50 |
-
-> TTS gratis via edge-tts. Biaya utama: **OpenRouter** (4 LLM calls/video) + **Google AI Studio** (~5-15 klip/video via Veo) + **YouTube Data API** (gratis s.d. 10k units/hari).
+1. **Input**: YouTube URL dari user
+2. **Download**: Source video via yt-dlp
+3. **Analyze**: Transkripsi (Whisper) + Scene detection
+4. **AI Planning**: LLM mengidentifikasi 3-7 momen terbaik untuk dijadikan clips
+5. **Render**: Cut, reframe ke 9:16, burn captions
+6. **Review**: Kirim ke Telegram untuk approve/reject
+7. **Learn**: Analytics + Memory untuk improve clip selection
 
 ---
 
-## Setup
+## 📋 Pipeline
 
-### Prasyarat
+```
+Manual Input (YouTube URL)
+         ↓
+┌────────────────┐
+│ SourceIngest   │  yt-dlp download + metadata extraction
+└────────┬───────┘
+         ↓
+    ┌────┴────┐
+    │         │
+┌───▼──────┐ ┌▼────────────┐
+│Transcript│ │SceneDetect  │  Whisper + PySceneDetect (parallel)
+└───┬──────┘ └┬────────────┘
+    └────┬────┘
+         ↓
+┌────────────────┐
+│ ClipPlanner    │  LLM analyzes transcript + scenes → identify viral moments
+│                │  Output: 3-7 clip plans with start_sec, end_sec, score, hook_type
+└────────┬───────┘
+         ↓
+┌────────────────┐
+│ ClipRender     │  Per clip: cut source → reframe 9:16 → burn captions
+│                │  Python + FFmpeg
+└────────┬───────┘
+         ↓
+┌────────────────┐
+│ Telegram       │  Review: ✅ Approve / ❌ Reject + reason
+└────────┬───────┘
+         ↓
+┌────────────────┐
+│ Analytics      │  Track performance (views, CTR, retention)
+└────────┬───────┘
+         ↓
+┌────────────────┐
+│ Memory         │  Learn: hook_type, duration, caption style → improve future clips
+└────────────────┘
+```
 
-- Node.js v20+
-- Python 3.11+
-- FFmpeg (wajib ada di PATH)
-- Akun: [OpenRouter](https://openrouter.ai) · [Google AI Studio](https://aistudio.google.com) · [Google Cloud](https://console.cloud.google.com) · [Telegram BotFather](https://t.me/BotFather)
+---
+
+## 🚀 Setup
+
+### Prerequisites
+
+- **Node.js** v20+
+- **Python** 3.11+
+- **FFmpeg** (wajib ada di PATH)
+- **yt-dlp** (install via pip atau package manager)
+- Akun: [OpenRouter](https://openrouter.ai) · [Telegram BotFather](https://t.me/BotFather)
 
 ### 1. Clone & Install
 
@@ -113,194 +104,358 @@ nano .env   # atau editor favoritmu
 
 | Key | Keterangan | Daftar di |
 |---|---|---|
-| `OPENROUTER_API_KEY` | LLM routing untuk semua agent | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| `YOUTUBE_API_KEY` | YouTube Data API v3 untuk riset trending | [console.cloud.google.com](https://console.cloud.google.com) → Enable **YouTube Data API v3** |
-| `GOOGLE_API_KEY` | Google AI Studio — Veo video generation | [aistudio.google.com](https://aistudio.google.com) → **Get API Key** |
-| `TELEGRAM_BOT_TOKEN` | Bot review video | [@BotFather](https://t.me/BotFather) |
+| `OPENROUTER_API_KEY` | LLM untuk clip planning | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| `TELEGRAM_BOT_TOKEN` | Bot review clips | [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | ID chat tujuan | kirim pesan ke [@userinfobot](https://t.me/userinfobot) |
 
-#### Model LLM Per-Agent (Opsional, default: `anthropic/claude-3-haiku`)
+#### Model LLM (Opsional)
 
 ```env
-# Tiap agent bisa pakai model berbeda untuk trade-off kualitas vs biaya
-RESEARCH_MODEL=anthropic/claude-3-haiku        # riset & analisis virality
-SCRIPT_MODEL=anthropic/claude-3-5-sonnet       # kreativitas narasi Gen-Z
-METADATA_MODEL=anthropic/claude-3-haiku        # judul + hashtag
-VISUAL_PROMPT_MODEL=google/gemini-flash-1.5    # enrichment prompt sinematik
+# Clip planning butuh model yang bagus untuk analisis
+CLIP_PLANNER_MODEL=anthropic/claude-3-5-sonnet
+
+# Metadata generation (title/description) bisa pakai model murah
+METADATA_MODEL=anthropic/claude-3-haiku
 ```
 
-> Lihat daftar model di [openrouter.ai/models](https://openrouter.ai/models). Model mahal hanya perlu di `SCRIPT_MODEL` — di sanalah kualitas narasi paling terasa.
-
-#### Background Music (Opsional)
+#### Whisper & Scene Detection
 
 ```env
-# Path ke file mp3 yang akan di-mix 12% volume di bawah voiceover
-BG_MUSIC_PATH=./assets/bg_music.mp3
+# Whisper model size: tiny, base, small, medium, large
+# 'base' = good balance antara speed & accuracy
+WHISPER_MODEL=base
+
+# Scene detection threshold (default 27.0)
+# Lower = more sensitive (more scenes detected)
+SCENE_DETECT_THRESHOLD=27.0
 ```
 
-### 3. Setup Google Cloud & Google AI Studio
+### 3. Validasi Setup
 
-#### YouTube Data API v3
-1. Buka [Google Cloud Console](https://console.cloud.google.com)
-2. Buat project baru → **APIs & Services** → **Enable APIs**
-3. Cari dan aktifkan **YouTube Data API v3**
-4. **Credentials** → **Create Credentials** → **API Key**
-5. Salin ke `YOUTUBE_API_KEY` di `.env`
+```bash
+# Validate config, database, schemas, helpers
+npm run validate
 
-> Kuota default: **10.000 units/hari** (gratis). Pipeline ini menggunakan ~100 units/hari — sangat aman.
-
-#### Google AI Studio (Veo)
-1. Buka [aistudio.google.com](https://aistudio.google.com)
-2. Klik **Get API Key** → **Create API key**
-3. Salin ke `GOOGLE_API_KEY` di `.env`
-4. Set `GOOGLE_VIDEO_MODEL=veo-2.0-generate-001` (atau model Veo lain yang tersedia di akunmu)
-
-> Pastikan akun Google AI Studio sudah diaktifkan untuk **video generation** (Veo). Cek ketersediaan model di [ai.google.dev/api/generate-content](https://ai.google.dev/api/generate-content#v1beta.models).
+# Expected output: ✅ All checks passed
+```
 
 ### 4. Jalankan
 
 ```bash
-# DRY_RUN — zero API call, semua pakai mock data
-DRY_RUN=true node src/index.js
-
-# DRY_RUN + trigger pipeline langsung sekarang
-DRY_RUN=true node src/index.js --run-now
-
-# Production (pastikan DRY_RUN=false atau tidak di-set di .env)
+# Start the agent (scheduler mode)
 node src/index.js
+
+# Manual trigger untuk satu video
+node src/trigger_clipper.js "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# DRY_RUN mode (mock data, no API calls)
+npm run dry-run
 ```
 
 ---
 
-## Telegram — Review & Commands
+## 📊 Output per Source Video
 
-### Tombol Review Video
+```
+output/{source_video_id}/
+├── source.mp4              # Downloaded source video
+├── source_ingest.json      # Metadata (title, channel, duration)
+├── transcript.json         # Full transcript with timestamps
+├── scene_detect.json       # Scene boundaries
+├── clip_planner.json       # Clip plans (3-7 clips)
+└── clips/
+    ├── {clip_id_1}/
+    │   ├── final.mp4       # Rendered clip 1080x1920
+    │   ├── thumbnail.jpg   # Thumbnail
+    │   └── clip_config.json
+    ├── {clip_id_2}/
+    │   ├── final.mp4
+    │   └── ...
+    └── ...
+```
 
-Saat video selesai dirender, bot akan mengirim preview dengan tombol:
+---
 
-| Tombol | Aksi |
-|---|---|
-| ✅ **APPROVE** | Kirim file `.mp4` ke Telegram untuk upload manual |
-| ❌ **REJECT** | Reject dengan alasan teks bebas |
-| 🎨 **Visual Buruk** | Reject + penalti sedang (`×0.4`) pada visual keyword di Memory |
-| 😴 **Topik Garing** | Reject + penalti kuat (`×0.3`) pada topik di Memory |
-| ✏️ **Edit Judul** | Ganti judul sebelum approve |
-
-### Commands Bot
+## 🤖 Telegram Commands
 
 | Command | Fungsi |
 |---|---|
-| `/trigger` | Jalankan pipeline research sekarang |
-| `/status` | Status semua video (processing/approved/rejected) |
+| `/trigger <youtube_url>` | Trigger clipper untuk URL tertentu |
+| `/status` | Status semua clips (processing/approved/rejected) |
+| `/approve_source <id>` | **NEW**: Approve source video untuk rendering |
 | `/queue` | Jumlah job per type di queue |
 | `/help` | Daftar perintah |
-| Kirim file `.csv` | Input analytics dari YouTube Studio |
 
-### Format CSV Analytics
+### Permission Gate Flow
 
-Export dari **YouTube Studio → Analytics → Advanced Mode → Export**.
+**Default behavior**: Source videos require manual approval sebelum rendering.
 
-Kolom yang diperlukan:
-```
-title, views, likes, comments, ctr, average percentage viewed (%)
-```
+1. Trigger clipper: `/trigger <youtube_url>`
+2. System downloads & analyzes video (transcript + scenes)
+3. System creates clip plans
+4. **Bot sends notification**: "Source video requires approval"
+5. User reviews source video
+6. User approves: `/approve_source <source_video_id>`
+7. System renders clips
 
----
+**Why?** Sistem tidak melakukan copyright check otomatis. User bertanggung jawab memastikan source video boleh di-clip.
 
-## Jadwal Otomatis (UTC)
+### Review Buttons
 
-| Waktu | Agent | Keterangan |
-|---|---|---|
-| `00:00` | Research | Ambil trending YouTube API + LLM pick topik harian |
-| `*/5 min` | Script, Metadata, Voiceover, Visual, Clip, Telegram | Poll queue, langsung return jika kosong |
-| `16:00` | Analytics | Proses CSV dari queue |
-| `16:30` | Memory | Update weight topik dari analytics |
-| `* * * * *` | MemoryPenalty | Terapkan penalti rejection instan (near-realtime) |
-| `Sun 03:00` | Cleanup | Hapus video rejected >7 hari |
+Saat clip selesai dirender, bot akan mengirim preview dengan tombol:
 
----
-
-## Output per Video
-
-```
-output/{video_id}/
-├── research.json       # Topik, keywords, trending_reason, virality score
-├── script.json         # Segmen narasi + visual_prompts[] + sfx enum
-├── metadata.json       # Judul, deskripsi, hashtag
-├── voiceover.json      # Path audio per segmen + durasi
-├── visual.json         # footage_paths[] per segmen (multi-klip)
-├── clip_config.json    # Config lengkap untuk Python clip agent
-├── clip_state.json     # State resume jika render gagal di tengah jalan
-├── work/               # Intermediate clips (dibersihkan otomatis)
-│   ├── seg_00_c0.mp4   # Klip individual per segmen per prompt
-│   ├── seg_00_c1.mp4
-│   └── ...
-├── sfx/                # SFX stems per segmen (opsional)
-├── final.mp4           # Video final 1080×1920, tanpa subtitle
-├── thumbnail.jpg       # Frame 1s + vignette cinematic (FFmpeg only)
-└── clip.json           # Output metadata clip agent
-```
+| Tombol | Aksi |
+|---|---|
+| ✅ **APPROVE** | Kirim file `.mp4` untuk upload manual |
+| ❌ **REJECT** | Reject dengan alasan teks bebas |
+| 🎨 **Visual Buruk** | Reject + penalti pada visual pattern |
+| 😴 **Topik Garing** | Reject + penalti kuat pada hook type |
 
 ---
 
-## Memory & Feedback System
+## 🧠 Memory & Learning System
 
 Memory Agent belajar dari dua sumber:
 
 ### 1. Analytics (nightly)
 - Weight dihitung dari: **views (40%)** + **engagement (35%)** + **retention (25%)**
-- **Weight decay**: topik tidak aktif >7 hari dikurangi 5% per cycle
-- **Max 1.000 records**: topik weight terendah dihapus otomatis
+- Track pattern: `hook_type`, `duration_range`, `caption_style`, `source_channel`
 
 ### 2. Rejection Feedback (near-realtime)
 
 | Reject Button | Penalty | Efek |
 |---|---|---|
-| 🎨 Visual Buruk | `weight × 0.4` | Topik masih bisa muncul; visual keyword cluster juga dipenalti |
-| 😴 Topik Garing | `weight × 0.3` | Topik hampir tidak muncul di rekomendasi Research |
+| 🎨 Visual Buruk | `weight × 0.4` | Penalti pada reframe_strategy pattern |
+| 😴 Topik Garing | `weight × 0.3` | Penalti kuat pada hook_type pattern |
 
-- **Floor weight**: `0.1` — topik tidak pernah hilang permanen, bisa recover via analytics
-- **`getTopTopics()`** — hanya return topik `weight > 0.2` (lolos threshold penalti)
-- **`getAvoidTopics()`** — daftar topik terpenalti, bisa dipakai di Research prompt
+Pattern dengan `weight < 0.2` tidak akan direkomendasikan oleh ClipPlanner.
 
 ---
 
-## Queue System
+## ⚙️ Advanced Configuration
 
-Jobs disimpan di SQLite (`data.db`):
+### Whisper Model Selection
 
-| Field | Keterangan |
+| Model | Speed | Accuracy | Use Case |
+|---|---|---|---|
+| `tiny` | Fastest | Low | Quick testing |
+| `base` | Fast | Good | **Recommended default** |
+| `small` | Medium | Better | High-quality content |
+| `medium` | Slow | Great | Professional use |
+| `large` | Very slow | Best | Maximum accuracy |
+
+### Scene Detection Tuning
+
+```env
+# Default: 27.0
+# Lower (15-25) = more scenes detected (good for fast-paced videos)
+# Higher (30-40) = fewer scenes (good for slow, cinematic videos)
+SCENE_DETECT_THRESHOLD=27.0
+```
+
+### Clip Planning Prompt Tuning
+
+Edit `src/agents/clip_planner/index.js` → `_analyzeWithLLM()` untuk customize:
+- Kriteria viral moment
+- Hook types
+- Risk assessment rules
+- Scoring algorithm
+
+---
+
+## 🧪 Testing & Validation
+
+### Validation
+```bash
+# Validate config, database, schemas
+npm run validate
+
+# Expected: 0 errors, warnings OK for missing API keys in DRY_RUN
+```
+
+### Dry-Run E2E Test
+```bash
+# Run full pipeline with mock data (no API calls, no downloads)
+npm run dry-run
+
+# Tests:
+# - SourceIngest → Transcript → SceneDetect → ClipPlanner → ClipRender
+# - Permission gate enforcement
+# - Idempotency (source URL, clips, render)
+# - Pipeline flow
+```
+
+### Real E2E Test (Required for Production)
+```bash
+# Prerequisites:
+# 1. Set real API keys in .env
+# 2. Use owned/licensed YouTube video
+# 3. Approve source manually
+
+# Start agent
+npm start
+
+# In another terminal, trigger clipper
+node src/trigger_clipper.js "https://youtube.com/watch?v=YOUR_VIDEO_ID"
+
+# Monitor logs
+tail -f logs/app.log
+
+# In Telegram, approve source
+/approve_source <source_video_id>
+
+# Wait for clips to render and review in Telegram
+```
+
+**⚠️ IMPORTANT**: System is **STAGING-READY**, not production-ready until:
+1. Real E2E test completed with actual YouTube video
+2. Copyright detection implemented OR clear legal disclaimer added
+3. Test results documented
+
+---
+
+## 🔧 Troubleshooting
+
+### yt-dlp not found
+
+```bash
+# macOS
+brew install yt-dlp
+
+# Linux
+pip install yt-dlp
+
+# Verify
+yt-dlp --version
+```
+
+### FFmpeg not found
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt install ffmpeg
+
+# Verify
+ffmpeg -version
+```
+
+### Whisper model download slow
+
+Model akan didownload otomatis saat pertama kali dipakai. Untuk pre-download:
+
+```bash
+python3 -c "import whisper; whisper.load_model('base')"
+```
+
+### Scene detection gagal
+
+Pastikan OpenCV terinstall:
+
+```bash
+pip install scenedetect[opencv]
+```
+
+---
+
+## 📈 Estimasi Biaya
+
+| Komponen | Biaya |
 |---|---|
-| `job_id` | UUID v4 |
-| `correlation_id` | Trace ID per pipeline run |
-| `type` | `research` · `script` · `metadata` · `voiceover` · `visual` · `clip` · `telegram` · `analytics` · `memory` · `memory_penalty` |
-| `status` | `pending` → `processing` → `done` / `failed` |
-| `priority` | `high=10` · `normal=5` · `low=1` |
-| `retry_count` | Max retry configurable via `MAX_RETRY` |
-| `timeout_at` | Auto-fail jika melewati batas waktu |
+| yt-dlp | Gratis |
+| Whisper (local) | Gratis |
+| Scene detection | Gratis |
+| OpenRouter (ClipPlanner) | ~$0.01-0.05 per video (tergantung model) |
+| FFmpeg | Gratis |
 
-Jobs melebihi `max_retry` dipindah ke tabel **dead_letter**.
+**Total per source video**: ~$0.01-0.05 (hanya LLM API)
 
 ---
 
-## Deploy ke VPS
+## 🚨 Known Limitations
+
+1. **Copyright**: Sistem ini **TIDAK** melakukan copyright check otomatis. User bertanggung jawab memastikan source video boleh di-clip. Permission gate (`/approve_source`) adalah manual review, bukan automated detection.
+2. **E2E Testing**: Belum dilakukan testing dengan real YouTube videos. System tested dengan mock data only.
+3. **Face tracking**: Belum diimplementasi. Reframe strategy `face_track` fallback ke `center`.
+4. **Motion tracking**: Belum diimplementasi. Reframe strategy `action_follow` fallback ke `center`.
+5. **Subtitle timing**: Caption burn-in masih sederhana (static text). Untuk word-by-word timing, perlu integrasi dengan subtitle file.
+6. **Multi-speaker**: Whisper tidak membedakan speaker. Untuk podcast/interview, perlu diarization.
+
+**⚠️ IMPORTANT**: System adalah **STAGING-READY**, bukan production-ready. E2E testing dan copyright solution required sebelum production deployment.
+
+---
+
+## 🔄 Migration dari UGC Generator
+
+Jika Anda sudah punya database lama dari UGC generator:
 
 ```bash
-bash scripts/deploy.sh <server_ip> root
+# Backup database lama
+cp data.db data.db.backup
+
+# Database akan auto-migrate saat pertama kali dijalankan
+node src/index.js
 ```
 
-### Monitor di Server
+Legacy tables (`videos`, `analytics` lama) tetap ada untuk backward compatibility.
+
+---
+
+## 📝 Development
+
+### Validation & Testing
 
 ```bash
-journalctl -u youtube-agent -f       # Live logs
-systemctl status youtube-agent       # Status service
-systemctl restart youtube-agent      # Restart
+# Validate config, database, schemas
+npm run validate
+
+# Dry-run with mock data (no API calls)
+npm run dry-run
+
+# Test config only
+npm run test:config
 ```
 
-### Update di Server
+### Run Tests (TODO)
 
 ```bash
-git pull origin main
-npm install
-systemctl restart youtube-agent
+npm test
 ```
+
+### Enable Legacy Pipeline
+
+Uncomment di `src/scheduler/cron.js`:
+
+```javascript
+// LEGACY PIPELINE (disabled by default, uncomment to enable)
+{
+  name: 'Research',
+  cron: '0 0 * * *',
+  agent: () => require('../agents/research').runResearchAgent(),
+},
+// ... dst
+```
+
+---
+
+## 📄 License
+
+MIT
+
+---
+
+## 🙏 Credits
+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) - Video download
+- [OpenAI Whisper](https://github.com/openai/whisper) - Transcription
+- [PySceneDetect](https://github.com/Breakthrough/PySceneDetect) - Scene detection
+- [FFmpeg](https://ffmpeg.org/) - Video processing
+- [OpenRouter](https://openrouter.ai/) - LLM API routing
+
+---
+
+## 📞 Support
+
+Issues: [GitHub Issues](https://github.com/bltzkrgg/youtube-agent/issues)

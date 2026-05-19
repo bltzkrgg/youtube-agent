@@ -7,23 +7,23 @@ const { v4: uuidv4 } = require('uuid');
 
 const config = require('../config');
 const logger = require('../utils/logger');
-const { safeParseJson } = require('../utils/safeJson');
 const { popJob, ackJob, nackJob, pushJob } = require('../utils/queue');
 const { readVideoJson } = require('../utils/storage');
-const { updateVideo, getDb } = require('../utils/db');
-const { triggerResearch } = require('../agents/research');
+const {
+  updateClip,
+  getClip,
+  getClipsBySourceVideo,
+  getSourceVideo,
+  getDb,
+} = require('../utils/db');
 
 const AGENT = 'TelegramBot';
 
 let bot;
 
 // Pending state for multi-step interactions
-// { chatId: { action, video_id, ... } }
 const pendingState = new Map();
-
-// Timeout map for pending user responses
 const pendingTimeouts = new Map();
-
 const RESPONSE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -49,22 +49,23 @@ function initBot() {
   return bot;
 }
 
-// ─── Main pipeline entry: kirim video untuk di-review ─────────────────────────
+// ─── Main pipeline entry: kirim clips untuk di-review ────────────────────────
 
 async function runTelegramAgent() {
-  const job = popJob('telegram');
+  const job = popJob('telegram_clip');
   if (!job) {
-    logger.info('Tidak ada job telegram di queue', { agent: AGENT });
+    logger.info('Tidak ada job telegram_clip di queue', { agent: AGENT });
     return;
   }
 
-  logger.info('Memulai pengiriman review ke Telegram', { agent: AGENT, jobId: job.id });
+  logger.info('Memulai pengiriman clip review ke Telegram', { agent: AGENT, jobId: job.id });
 
   try {
-    const { video_id, correlation_id } = job.payload;
-    if (!video_id) throw new Error('video_id tidak ada di payload');
+    const { clip_id, source_video_id, correlation_id } = job.payload;
+    if (!clip_id) throw new Error('clip_id tidak ada di payload');
+    if (!source_video_id) throw new Error('source_video_id tidak ada di payload');
 
-    await _sendVideoForReview(video_id, correlation_id || job.correlation_id);
+    await _sendClipForReview(clip_id, source_video_id, correlation_id || job.correlation_id);
     ackJob(job.id);
   } catch (err) {
     logger.error('Telegram Agent gagal', {
@@ -78,59 +79,180 @@ async function runTelegramAgent() {
   }
 }
 
-// ─── Send video for review ────────────────────────────────────────────────────
+// ─── Send clip for review ─────────────────────────────────────────────────────
 
-async function _sendVideoForReview(videoId, correlationId) {
-  const metadata = readVideoJson(videoId, 'metadata.json');
-  const clip = readVideoJson(videoId, 'clip.json');
-  const research = readVideoJson(videoId, 'research.json');
+async function _sendClipForReview(clipId, sourceVideoId, correlationId) {
+  const clipDb = getClip(clipId);
+  const sourceVideo = getSourceVideo(sourceVideoId);
+  const clipPlannerData = readVideoJson(sourceVideoId, 'clip_planner.json');
 
-  if (!metadata || !clip) throw new Error('Data video tidak lengkap untuk review');
+  if (!clipDb || !sourceVideo) throw new Error('Data clip tidak lengkap untuk review');
 
-  const description = metadata.description;
-  const hashtagStr = metadata.hashtags?.join(' ') || '';
-
-  // Header with keyboard (MarkdownV2)
-  const header = `🎬 *VIDEO BARU UNTUK REVIEW*\n\n` +
-    `📌 *Topik:* ${_escape(research?.topic || '-')}\n` +
-    `📝 *Judul:* ${_escape(metadata.title)}\n` +
-    `⏱ *Durasi:* ${_escape(String(clip.duration_seconds))}s\n` +
-    `🆔 \`${videoId}\``;
-
-  await bot.sendMessage(config.telegram.chatId, header, {
-    parse_mode: 'MarkdownV2',
-    reply_markup: _buildReviewKeyboard(videoId),
-  });
-
-  // Full description + hashtags as plain text (no parse_mode → no escaping issues)
-  const descMsg = `📝 Deskripsi:\n\n${description}\n\n${hashtagStr}`;
-  for (const chunk of _splitMessage(descMsg, 4096)) {
-    await bot.sendMessage(config.telegram.chatId, chunk);
+  // IDEMPOTENCY: Skip if clip already sent for review or processed
+  if (
+    clipDb.status === 'pending_review' ||
+    clipDb.status === 'approved' ||
+    clipDb.status === 'rejected' ||
+    clipDb.status === 'uploaded'
+  ) {
+    logger.info('Clip sudah dikirim untuk review atau sudah diproses, skip', {
+      agent: AGENT,
+      clipId,
+      status: clipDb.status,
+    });
+    return;
   }
 
-  logger.info('Video terkirim ke Telegram untuk review', { agent: AGENT, videoId });
+  // Find enriched clip data from clip_planner.json
+  const clipPlan = clipPlannerData?.clips?.find((c) => c.clip_id === clipId);
+
+  const duration = _number(clipDb.duration_sec, 0).toFixed(1);
+  const start = _number(clipDb.start_sec, 0).toFixed(1);
+  const end = _number(clipDb.end_sec, 0).toFixed(1);
+  const score = _number(clipDb.score, 0);
+
+  const header = `🎬 *CLIP BARU UNTUK REVIEW*\n\n` +
+    `📺 *Source:* ${_escape(sourceVideo.video_title || '-')}\n` +
+    `📌 *Channel:* ${_escape(sourceVideo.channel_title || '-')}\n` +
+    `⏱ *Duration:* ${_escape(duration)}s \\(${_escape(start)}s \\- ${_escape(end)}s\\)\n` +
+    `🎯 *Hook Type:* ${_escape(clipDb.hook_type || '-')}\n` +
+    `⭐ *Score:* ${_escape(score)}/100\n` +
+    `🆔 ${_code(clipId)}`;
+
+  await _sendMessage(config.telegram.chatId, header, {
+    parse_mode: 'MarkdownV2',
+  });
+
+  if (clipPlan) {
+    const details = `📝 *Reason:*\n${_escape(clipPlan.reason || '-')}\n\n` +
+      `💬 *Caption Plan:*\n${_escape(clipDb.caption_plan || '-')}`;
+
+    await _sendMessage(config.telegram.chatId, details, {
+      parse_mode: 'MarkdownV2',
+    });
+
+    if (clipPlan.risk_assessment) {
+      const risk = clipPlan.risk_assessment;
+      const riskEmoji = {
+        safe: '✅',
+        low: '🟢',
+        medium: '🟡',
+        high: '🔴',
+        critical: '⛔',
+      }[risk.risk_level] || '❓';
+
+      let riskMsg = `${riskEmoji} *Risk Level:* ${_escape(String(risk.risk_level || 'unknown').toUpperCase())}\n`;
+
+      if (Array.isArray(risk.concerns) && risk.concerns.length > 0) {
+        riskMsg += `\n⚠️ *Concerns:*\n${risk.concerns.map((c) => `• ${_escape(c)}`).join('\n')}`;
+      }
+
+      if (Array.isArray(risk.recommendations) && risk.recommendations.length > 0) {
+        riskMsg += `\n\n💡 *Recommendations:*\n${risk.recommendations.map((r) => `• ${_escape(r)}`).join('\n')}`;
+      }
+
+      await _sendMessage(config.telegram.chatId, riskMsg, {
+        parse_mode: 'MarkdownV2',
+      });
+    }
+
+    if (clipPlan.moment_scoring) {
+      const scoring = clipPlan.moment_scoring;
+      const confidence = _number(scoring.confidence, 0) * 100;
+
+      let scoreMsg = `📊 *Multi\\-Perspective Scoring*\n\n` +
+        `Final Score: *${_escape(scoring.final_score ?? '-')}/100* \\(confidence: ${_escape(confidence.toFixed(0))}%\\)\n\n`;
+
+      if (Array.isArray(scoring.strengths) && scoring.strengths.length > 0) {
+        scoreMsg += `💪 *Strengths:*\n${scoring.strengths.map((s) => `• ${_escape(s)}`).join('\n')}\n\n`;
+      }
+
+      if (Array.isArray(scoring.weaknesses) && scoring.weaknesses.length > 0) {
+        scoreMsg += `⚠️ *Weaknesses:*\n${scoring.weaknesses.map((w) => `• ${_escape(w)}`).join('\n')}`;
+      }
+
+      await _sendMessage(config.telegram.chatId, scoreMsg, {
+        parse_mode: 'MarkdownV2',
+      });
+    }
+  }
+
+  if (clipDb.risk_notes) {
+    await _sendMessage(
+      config.telegram.chatId,
+      `⚠️ *Risk Notes:*\n${_escape(clipDb.risk_notes)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+
+  if (clipDb.final_video_path && fs.existsSync(clipDb.final_video_path)) {
+    try {
+      await bot.sendVideo(config.telegram.chatId, clipDb.final_video_path, {
+        caption: `🎬 Clip Preview\n📁 ${_code(clipId)}`,
+        parse_mode: 'MarkdownV2',
+        supports_streaming: true,
+        reply_markup: _buildClipReviewKeyboard(clipId),
+      });
+    } catch (err) {
+      logger.error('Gagal mengirim video clip', {
+        agent: AGENT,
+        clipId,
+        error_message: err.message,
+      });
+
+      await _sendMessage(
+        config.telegram.chatId,
+        `⚠️ Gagal kirim video: ${_escape(err.message)}\n\nGunakan keyboard di bawah untuk review:`,
+        {
+          parse_mode: 'MarkdownV2',
+          reply_markup: _buildClipReviewKeyboard(clipId),
+        }
+      );
+    }
+  } else {
+    await _sendMessage(
+      config.telegram.chatId,
+      `⚠️ Video file tidak ditemukan\\. Gunakan keyboard di bawah untuk review:`,
+      {
+        parse_mode: 'MarkdownV2',
+        reply_markup: _buildClipReviewKeyboard(clipId),
+      }
+    );
+  }
+
+  logger.info('Clip terkirim ke Telegram untuk review', {
+    agent: AGENT,
+    clipId,
+    correlationId,
+  });
 }
 
-// Structured reject reasons — each maps to a MemoryAgent penalty type
-const REJECT_REASONS = {
-  visual_buruk: { label: '🎨 Visual Buruk',  penaltyType: 'visual',  penaltyFactor: 0.4 },
-  topik_garing: { label: '😴 Topik Garing',  penaltyType: 'topic',   penaltyFactor: 0.3 },
+// ─── Structured reject reasons for clips ──────────────────────────────────────
+
+const CLIP_REJECT_REASONS = {
+  visual_buruk: { label: '🎨 Visual Buruk', penaltyType: 'visual', penaltyFactor: 0.4 },
+  topik_garing: { label: '😴 Topik Garing', penaltyType: 'topic', penaltyFactor: 0.3 },
+  timing_buruk: { label: '⏱ Timing Buruk', penaltyType: 'general', penaltyFactor: 0.5 },
+  hook_lemah: { label: '🎣 Hook Lemah', penaltyType: 'topic', penaltyFactor: 0.4 },
 };
 
-function _buildReviewKeyboard(videoId) {
+function _buildClipReviewKeyboard(clipId) {
   return {
     inline_keyboard: [
       [
-        { text: '✅ APPROVE', callback_data: `approve|${videoId}` },
-        { text: '❌ REJECT',  callback_data: `reject|${videoId}` },
+        { text: '✅ APPROVE', callback_data: `clip_approve|${clipId}` },
+        { text: '❌ REJECT', callback_data: `clip_reject|${clipId}` },
       ],
-      // Structured reject shortcuts — triggers penalty feedback to MemoryAgent
-      Object.entries(REJECT_REASONS).map(([key, r]) => ({
-        text: r.label,
-        callback_data: `reject_reason|${videoId}|${key}`,
-      })),
       [
-        { text: '✏️ Edit Judul', callback_data: `edit_title|${videoId}` },
+        { text: CLIP_REJECT_REASONS.visual_buruk.label, callback_data: `clip_reject_reason|${clipId}|visual_buruk` },
+        { text: CLIP_REJECT_REASONS.topik_garing.label, callback_data: `clip_reject_reason|${clipId}|topik_garing` },
+      ],
+      [
+        { text: CLIP_REJECT_REASONS.timing_buruk.label, callback_data: `clip_reject_reason|${clipId}|timing_buruk` },
+        { text: CLIP_REJECT_REASONS.hook_lemah.label, callback_data: `clip_reject_reason|${clipId}|hook_lemah` },
+      ],
+      [
+        { text: '📊 View All Clips', callback_data: `view_all_clips|${clipId}` },
       ],
     ],
   };
@@ -142,246 +264,311 @@ async function _handleCallback(query) {
   const { data, message } = query;
   const chatId = message.chat.id.toString();
 
-  // Only respond to authorized chat
   if (chatId !== config.telegram.chatId) return;
 
   await bot.answerCallbackQuery(query.id);
 
-  const separator = data.includes(':') ? ':' : '|';
-  const parts = (data || '').split(separator);
+  const separator = String(data || '').includes(':') ? ':' : '|';
+  const parts = String(data || '').split(separator);
   const action = parts[0];
-  const videoId = parts[1]; // for old callbacks, parts[1] is videoId. for res_ok, it's jobId.
 
   if (!action || !parts[1]) return;
 
   switch (action) {
-    case 'approve':
-      await _handleApprove(chatId, videoId);
+    case 'clip_approve':
+      await _handleClipApprove(chatId, parts[1]);
       break;
-    case 'reject':
-      await _handleRejectStart(chatId, videoId);
+
+    case 'clip_reject':
+      await _handleClipRejectStart(chatId, parts[1]);
       break;
-    case 'reject_reason': {
-      // parts[2] = reasonKey (visual_buruk | topik_garing)
-      const reasonKey = parts[2];
-      await _handleStructuredReject(chatId, videoId, reasonKey);
+
+    case 'clip_reject_reason':
+      await _handleClipStructuredReject(chatId, parts[1], parts[2]);
       break;
-    }
-    case 'edit_title':
-      await _handleEditTitleStart(chatId, videoId);
+
+    case 'view_all_clips':
+      await _handleViewAllClips(chatId, parts[1]);
       break;
-    case 'view_desc':
-      await _handleViewDesc(chatId, videoId);
+
+    case 'trigger_clipper':
+      await _handleTriggerClipper(chatId);
       break;
-    case 'c_s':
-      await _handleConfirmScript(chatId, parts[1]);
-      break;
-    case 'x_s':
-      await _handleCancelScript(chatId, parts[1]);
-      break;
-    case 'trigger_research':
-      await bot.sendMessage(chatId, '🔄 Memulai pipeline research\\.\\.\\.', { parse_mode: 'MarkdownV2' });
-      const { triggerResearch } = require('../agents/research');
-      triggerResearch().catch((e) => {
-        bot.sendMessage(chatId, `❌ Error: ${_escape(e.message)}`, { parse_mode: 'MarkdownV2' });
-      });
-      break;
+
     case 'check_queue':
       await _sendQueueStats(chatId);
       break;
+
     default:
       logger.warn('Callback action tidak dikenal', { agent: AGENT, action });
   }
 }
 
-// ─── Approve ──────────────────────────────────────────────────────────────────
+// ─── Clip approve ─────────────────────────────────────────────────────────────
 
-async function _handleApprove(chatId, videoId) {
-  logger.info('Video di-APPROVE', { agent: AGENT, videoId });
+async function _handleClipApprove(chatId, clipId) {
+  logger.info('Clip di-APPROVE', { agent: AGENT, clipId });
 
-  updateVideo(videoId, { status: 'approved', approved_at: new Date().toISOString() });
+  updateClip(clipId, {
+    status: 'approved',
+    approved_at: new Date().toISOString(),
+  });
 
-  const clip = readVideoJson(videoId, 'clip.json');
-  const metadata = readVideoJson(videoId, 'metadata.json');
+  const clipDb = getClip(clipId);
 
-  await bot.sendMessage(chatId,
-    `✅ Video \`${videoId}\` di\\-approve\\. Mengirim file video\\.\\.\\.`,
+  await _sendMessage(
+    chatId,
+    `✅ Clip ${_code(clipId)} di\\-approve\\. Mengirim file\\.\\.\\.`,
     { parse_mode: 'MarkdownV2' }
   );
 
   try {
     if (config.dryRun) {
-      await bot.sendMessage(chatId,
-        `🔵 \\[DRY\\_RUN\\] Video tidak dikirim \\(mock file\\)\\.`,
+      await _sendMessage(
+        chatId,
+        `🔵 \\[DRY\\_RUN\\] Clip tidak dikirim \\(mock file\\)\\.`,
         { parse_mode: 'MarkdownV2' }
       );
     } else {
-      if (!clip?.final_video_path || !fs.existsSync(clip.final_video_path)) {
-        throw new Error(`File video tidak ditemukan: ${clip?.final_video_path}`);
+      if (!clipDb?.final_video_path || !fs.existsSync(clipDb.final_video_path)) {
+        throw new Error(`File clip tidak ditemukan: ${clipDb?.final_video_path}`);
       }
 
-      await bot.sendVideo(chatId, clip.final_video_path, {
-        caption: `🎬 ${_escape(metadata?.title || videoId)}\n\n📁 \`${videoId}\`\n\nDownload file ini, lalu upload manual ke YouTube\\.`,
+      const approvedCaption = `🎬 Clip Approved\n\n` +
+        `📁 File: ${_code(path.basename(clipDb.final_video_path))}\n` +
+        `⏱ Duration: ${_escape(_number(clipDb.duration_sec, 0).toFixed(1))}s\n` +
+        `🎯 Hook: ${_escape(clipDb.hook_type || '-')}\n` +
+        `⭐ Score: ${_escape(_number(clipDb.score, 0))}/100\n\n` +
+        `Download dan upload ke YouTube Shorts\\.`;
+
+      await bot.sendDocument(chatId, clipDb.final_video_path, {
+        caption: approvedCaption,
         parse_mode: 'MarkdownV2',
-        supports_streaming: true,
       });
-
-      // Send full description + hashtags as plain text for copy-paste
-      if (metadata?.description) {
-        const hashtagStr = metadata.hashtags?.join(' ') || '';
-        const descMsg = `📝 Deskripsi:\n\n${metadata.description}\n\n${hashtagStr}`;
-        for (const chunk of _splitMessage(descMsg, 4096)) {
-          await bot.sendMessage(chatId, chunk);
-        }
-      }
     }
 
-    updateVideo(videoId, { status: 'uploaded' });
+    updateClip(clipId, { status: 'uploaded' });
 
-    await bot.sendMessage(chatId,
-      '📊 Upload manual ke YouTube setelah file dicek\\. Kirim CSV analytics nanti kalau video sudah punya performa awal\\.',
+    await _sendMessage(
+      chatId,
+      '📊 Upload manual ke YouTube Shorts\\. Kirim CSV analytics nanti untuk tracking performa\\.',
       { parse_mode: 'MarkdownV2' }
     );
-
   } catch (err) {
-    logger.error('Gagal mengirim video ke Telegram', { agent: AGENT, videoId, error_message: err.message });
-    await bot.sendMessage(chatId,
-      `⚠️ Gagal kirim video: ${_escape(err.message)}`,
+    logger.error('Gagal mengirim clip ke Telegram', {
+      agent: AGENT,
+      clipId,
+      error_message: err.message,
+    });
+
+    await _sendMessage(
+      chatId,
+      `⚠️ Gagal kirim clip: ${_escape(err.message)}`,
       { parse_mode: 'MarkdownV2' }
     );
   }
 }
 
-// ─── Reject ───────────────────────────────────────────────────────────────────
+// ─── Clip reject ──────────────────────────────────────────────────────────────
 
-async function _handleRejectStart(chatId, videoId) {
-  _setPendingState(chatId, { action: 'reject', video_id: videoId });
-  await bot.sendMessage(chatId,
-    `❌ Ketik alasan reject untuk video \`${videoId}\` \\(atau ketik /skip untuk skip alasan\\):`,
+async function _handleClipRejectStart(chatId, clipId) {
+  _setPendingState(chatId, {
+    action: 'clip_reject',
+    clip_id: clipId,
+  });
+
+  await _sendMessage(
+    chatId,
+    `❌ Ketik alasan reject untuk clip ${_code(clipId)} \\(atau ketik ${_code('/skip')} untuk skip alasan\\):`,
     { parse_mode: 'MarkdownV2' }
   );
 }
 
-async function _handleRejectConfirm(chatId, reason) {
+async function _handleClipRejectConfirm(chatId, reason) {
   const state = pendingState.get(chatId);
-  if (!state || state.action !== 'reject') return;
+  if (!state || state.action !== 'clip_reject') return;
 
-  const videoId = state.video_id;
+  const clipId = state.clip_id;
   _clearPendingState(chatId);
 
-  updateVideo(videoId, {
+  updateClip(clipId, {
     status: 'rejected',
     rejected_at: new Date().toISOString(),
     reject_reason: reason,
   });
 
-  logger.info('Video di-REJECT (manual)', { agent: AGENT, videoId, reason });
-  await bot.sendMessage(chatId,
-    `❌ Video \`${videoId}\` di\\-reject\\.\n📝 Alasan: ${_escape(reason)}`,
+  logger.info('Clip di-REJECT (manual)', {
+    agent: AGENT,
+    clipId,
+    reason,
+  });
+
+  await _sendMessage(
+    chatId,
+    `❌ Clip ${_code(clipId)} di\\-reject\\.\n📝 Alasan: ${_escape(reason)}`,
     { parse_mode: 'MarkdownV2' }
   );
 }
 
-/**
- * Structured reject: one-tap button with a known reason key.
- * Immediately marks video rejected AND queues a memory_penalty job.
- */
-async function _handleStructuredReject(chatId, videoId, reasonKey) {
-  const reason = REJECT_REASONS[reasonKey];
+async function _handleClipStructuredReject(chatId, clipId, reasonKey) {
+  const reason = CLIP_REJECT_REASONS[reasonKey];
+
   if (!reason) {
-    await bot.sendMessage(chatId, `⚠️ Alasan tidak dikenal: ${_escape(reasonKey)}`,
-      { parse_mode: 'MarkdownV2' });
+    await _sendMessage(
+      chatId,
+      `⚠️ Alasan tidak dikenal: ${_escape(reasonKey)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
     return;
   }
 
-  const research = readVideoJson(videoId, 'research.json');
+  const clipDb = getClip(clipId);
+  if (!clipDb) {
+    await _sendMessage(
+      chatId,
+      `⚠️ Clip tidak ditemukan: ${_code(clipId)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
 
-  updateVideo(videoId, {
+  updateClip(clipId, {
     status: 'rejected',
     rejected_at: new Date().toISOString(),
     reject_reason: reason.label,
   });
 
-  logger.info('Video di-REJECT (structured)', {
-    agent: AGENT, videoId, reason: reasonKey, penaltyType: reason.penaltyType,
+  logger.info('Clip di-REJECT (structured)', {
+    agent: AGENT,
+    clipId,
+    reason: reasonKey,
+    penaltyType: reason.penaltyType,
   });
 
-  // Push feedback to MemoryAgent for weight penalty
-  if (research?.topic) {
-    const correlationId = readVideoJson(videoId, 'clip.json')?.correlation_id || uuidv4();
-    pushJob('memory_penalty', {
-      video_id:      videoId,
+  const correlationId = clipDb.correlation_id || uuidv4();
+
+  pushJob(
+    'memory_penalty',
+    {
+      clip_id: clipId,
       correlation_id: correlationId,
-      topic:         research.topic,
-      penalty_type:  reason.penaltyType,
+      penalty_type: reason.penaltyType,
       penalty_factor: reason.penaltyFactor,
-      reason_label:  reason.label,
-    }, {
+      reason_label: reason.label,
+    },
+    {
       correlationId,
       priority: 'high',
-    });
-    logger.info('Memory penalty job dikirim', { agent: AGENT, topic: research.topic, reasonKey });
+    }
+  );
+
+  logger.info('Memory penalty job dikirim', {
+    agent: AGENT,
+    clipId,
+    reasonKey,
+  });
+
+  await _sendMessage(
+    chatId,
+    `${_escape(reason.label)} — Clip ${_code(clipId)} di\\-reject\\.\n` +
+      `📉 Penalti akan diterapkan ke pattern: _${_escape(clipDb.hook_type || 'unknown')}_`,
+    { parse_mode: 'MarkdownV2' }
+  );
+}
+
+// ─── View all clips from source ───────────────────────────────────────────────
+
+async function _handleViewAllClips(chatId, clipId) {
+  const clipDb = getClip(clipId);
+
+  if (!clipDb) {
+    await _sendMessage(
+      chatId,
+      '⚠️ Clip tidak ditemukan',
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
   }
 
-  await bot.sendMessage(chatId,
-    `${reason.label} — Video \`${videoId}\` di\\-reject\.\n` +
-    `📉 Penalti akan diterapkan ke topik: _${_escape(research?.topic || '-')}_`,
+  const allClips = getClipsBySourceVideo(clipDb.source_video_id);
+  const sourceVideo = getSourceVideo(clipDb.source_video_id);
+
+  let msg = `📊 *All Clips from Source*\n\n` +
+    `📺 *Source:* ${_escape(sourceVideo?.video_title || '-')}\n` +
+    `📌 *Channel:* ${_escape(sourceVideo?.channel_title || '-')}\n` +
+    `🎬 *Total Clips:* ${_escape(allClips.length)}\n\n`;
+
+  for (const clip of allClips) {
+    const statusEmoji = {
+      pending: '⏳',
+      pending_review: '👀',
+      approved: '✅',
+      rejected: '❌',
+      uploaded: '📤',
+      manual_review: '⚠️',
+    }[clip.status] || '❓';
+
+    msg += `${statusEmoji} ${_code(String(clip.id).slice(0, 8))} \\- ` +
+      `${_escape(clip.hook_type || '-')} \\- ` +
+      `${_escape(_number(clip.score, 0))}/100 \\- ` +
+      `${_escape(_number(clip.duration_sec, 0).toFixed(1))}s\n`;
+  }
+
+  await _sendMessage(chatId, msg, {
+    parse_mode: 'MarkdownV2',
+  });
+}
+
+// ─── Trigger clipper ──────────────────────────────────────────────────────────
+
+async function _handleTriggerClipper(chatId) {
+  _setPendingState(chatId, { action: 'trigger_clipper' });
+
+  await _sendMessage(
+    chatId,
+    '🎬 Kirim YouTube URL untuk di\\-clip:',
     { parse_mode: 'MarkdownV2' }
   );
 }
 
-// ─── Edit Title ───────────────────────────────────────────────────────────────
-
-async function _handleEditTitleStart(chatId, videoId) {
-  _setPendingState(chatId, { action: 'edit_title', video_id: videoId });
-  const metadata = readVideoJson(videoId, 'metadata.json');
-  await bot.sendMessage(chatId,
-    `✏️ Judul saat ini:\n*${_escape(metadata?.title || '-')}*\n\nKetik judul baru:`,
-    { parse_mode: 'MarkdownV2' }
-  );
-}
-
-async function _handleEditTitleConfirm(chatId, newTitle) {
+async function _handleTriggerClipperConfirm(chatId, url) {
   const state = pendingState.get(chatId);
-  if (!state || state.action !== 'edit_title') return;
+  if (state?.action === 'trigger_clipper') {
+    _clearPendingState(chatId);
+  }
 
-  const videoId = state.video_id;
-  _clearPendingState(chatId);
+  if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
+    await _sendMessage(
+      chatId,
+      '⚠️ URL harus berupa YouTube URL',
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
 
-  updateVideo(videoId, { title: newTitle });
-  logger.info('Judul video diupdate', { agent: AGENT, videoId, newTitle });
-
-  await bot.sendMessage(chatId,
-    `✅ Judul diupdate:\n*${_escape(newTitle)}*`,
+  await _sendMessage(
+    chatId,
+    `🔄 Memulai clipper pipeline untuk:\n${_escape(url)}`,
     { parse_mode: 'MarkdownV2' }
   );
-}
 
-// ─── View description ─────────────────────────────────────────────────────────
+  try {
+    const { triggerSourceIngest } = require('../agents/source_ingest');
 
-async function _handleViewDesc(chatId, videoId) {
-  const metadata = readVideoJson(videoId, 'metadata.json');
-  const desc = metadata?.description || '-';
+    await triggerSourceIngest(url);
 
-  // Split into chunks if needed (Telegram 4096 char limit)
-  const chunks = _splitMessage(desc, 3900);
-  for (const chunk of chunks) {
-    await bot.sendMessage(chatId, chunk);
+    await _sendMessage(
+      chatId,
+      '✅ Pipeline dimulai\\! Monitor progress di logs\\.',
+      { parse_mode: 'MarkdownV2' }
+    );
+  } catch (err) {
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
-}
-
-// ─── Script Confirmation ──────────────────────────────────────────────────────
-
-async function _handleConfirmScript(chatId, jobId) {
-  const { updateJobStatus } = require('../utils/queue');
-  updateJobStatus(jobId, 'pending');
-  await bot.sendMessage(chatId, `✅ Riset disetujui\\. Melanjutkan penulisan script\\.\\.\\.`, { parse_mode: 'MarkdownV2' });
-}
-
-async function _handleCancelScript(chatId, jobId) {
-  const { deleteJob } = require('../utils/queue');
-  deleteJob(jobId);
-  await bot.sendMessage(chatId, `❌ Riset dibatalkan\\. Job dihapus\\.`, { parse_mode: 'MarkdownV2' });
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────────
@@ -392,7 +579,6 @@ async function _handleMessage(msg) {
 
   const text = (msg.text || '').trim();
 
-  // Handle document upload (CSV analytics)
   if (msg.document) {
     await _handleDocumentUpload(msg);
     return;
@@ -400,29 +586,37 @@ async function _handleMessage(msg) {
 
   if (!text) return;
 
-  // Check pending state first
   const state = pendingState.get(chatId);
+
   if (state) {
     if (text === '/skip') {
       _clearPendingState(chatId);
-      await bot.sendMessage(chatId, 'Aksi dibatalkan\\.', { parse_mode: 'MarkdownV2' });
+
+      await _sendMessage(
+        chatId,
+        'Aksi dibatalkan\\.',
+        { parse_mode: 'MarkdownV2' }
+      );
+
       return;
     }
 
     switch (state.action) {
-      case 'reject':
-        await _handleRejectConfirm(chatId, text);
+      case 'clip_reject':
+        await _handleClipRejectConfirm(chatId, text);
         return;
-      case 'edit_title':
-        await _handleEditTitleConfirm(chatId, text);
+
+      case 'trigger_clipper':
+        await _handleTriggerClipperConfirm(chatId, text);
         return;
+
+      default:
+        break;
     }
   }
 
-  // Commands
   if (text.startsWith('/')) {
     await _handleCommand(chatId, text, msg);
-    return;
   }
 }
 
@@ -445,39 +639,59 @@ async function _handleCommand(chatId, text, msg) {
       await _sendQueueStats(chatId);
       break;
 
-    case '/clear_queue':
-      await _handleClearQueue(chatId);
+    case '/trigger':
+      if (args.length > 0) {
+        await _handleTriggerClipperConfirm(chatId, args[0]);
+      } else {
+        await _handleTriggerClipper(chatId, msg);
+      }
       break;
 
-    case '/trigger':
-      await bot.sendMessage(chatId, '🔄 Memulai pipeline research\\.\\.\\.',
-        { parse_mode: 'MarkdownV2' });
-      triggerResearch().catch((e) => {
-        bot.sendMessage(chatId, `❌ Error: ${_escape(e.message)}`, { parse_mode: 'MarkdownV2' });
-      });
+    case '/approve_source':
+      if (args.length > 0) {
+        await _handleApproveSource(chatId, args[0]);
+      } else {
+        await _sendMessage(
+          chatId,
+          `⚠️ Usage: ${_code('/approve_source <source_video_id>')}`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      }
       break;
 
     default:
-      await bot.sendMessage(chatId, `❓ Perintah tidak dikenal: ${_escape(cmd)}`,
-        { parse_mode: 'MarkdownV2' });
+      await _sendMessage(
+        chatId,
+        `❓ Perintah tidak dikenal: ${_escape(cmd)}`,
+        { parse_mode: 'MarkdownV2' }
+      );
   }
 }
 
-// ─── CSV Analytics upload ─────────────────────────────────────────────────────
+// ─── CSV analytics upload ─────────────────────────────────────────────────────
 
 async function _handleDocumentUpload(msg) {
   const doc = msg.document;
+
   if (!doc.file_name?.endsWith('.csv')) {
-    await bot.sendMessage(msg.chat.id, '⚠️ Hanya file CSV yang diterima untuk analytics\\.', { parse_mode: 'MarkdownV2' });
+    await _sendMessage(
+      msg.chat.id,
+      '⚠️ Hanya file CSV yang diterima untuk analytics\\.',
+      { parse_mode: 'MarkdownV2' }
+    );
+
     return;
   }
 
   logger.info('CSV analytics diterima via Telegram', { agent: AGENT });
-  await bot.sendMessage(msg.chat.id, '📊 Memproses file analytics CSV\\.\\.\\.',
-    { parse_mode: 'MarkdownV2' });
+
+  await _sendMessage(
+    msg.chat.id,
+    '📊 Memproses file analytics CSV\\.\\.\\.',
+    { parse_mode: 'MarkdownV2' }
+  );
 
   try {
-    // Download file
     const fileLink = await bot.getFileLink(doc.file_id);
     const axios = require('axios');
     const res = await axios.get(fileLink, { responseType: 'arraybuffer' });
@@ -485,87 +699,190 @@ async function _handleDocumentUpload(msg) {
     const csvPath = path.join(config.paths.output, `analytics_${Date.now()}.csv`);
     fs.writeFileSync(csvPath, res.data);
 
-    // Push analytics job
     const correlationId = uuidv4();
-    pushJob('analytics', { csv_path: csvPath, correlation_id: correlationId }, {
-      correlationId,
-      priority: 'normal',
-    });
 
-    await bot.sendMessage(msg.chat.id,
-      `✅ CSV diterima dan dijadwalkan untuk diproses\\.\nJob ID: \`${correlationId}\``,
+    pushJob(
+      'analytics',
+      {
+        csv_path: csvPath,
+        correlation_id: correlationId,
+      },
+      {
+        correlationId,
+        priority: 'normal',
+      }
+    );
+
+    await _sendMessage(
+      msg.chat.id,
+      `✅ CSV diterima dan dijadwalkan untuk diproses\\.\nJob ID: ${_code(correlationId)}`,
       { parse_mode: 'MarkdownV2' }
     );
   } catch (err) {
-    logger.error('Gagal memproses CSV analytics', { agent: AGENT, error_message: err.message });
-    await bot.sendMessage(msg.chat.id, `❌ Gagal: ${_escape(err.message)}`,
-      { parse_mode: 'MarkdownV2' });
+    logger.error('Gagal memproses CSV analytics', {
+      agent: AGENT,
+      error_message: err.message,
+    });
+
+    await _sendMessage(
+      msg.chat.id,
+      `❌ Gagal: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
 }
 
-async function _handleClearQueue(chatId) {
-  const { hardResetDatabase } = require('../utils/db');
-  hardResetDatabase();
-  const outputDir = config.paths.output;
-  if (fs.existsSync(outputDir)) {
-    const items = fs.readdirSync(outputDir);
-    for (const item of items) {
-      const p = path.join(outputDir, item);
-      if (fs.statSync(p).isDirectory()) fs.rmSync(p, { recursive: true, force: true });
+// ─── Approve source ───────────────────────────────────────────────────────────
+
+async function _handleApproveSource(chatId, sourceVideoId) {
+  try {
+    const {
+      updateSourceVideo,
+      getClipsBySourceVideo: getClipsForSource,
+      getSourceVideo: getSourceById,
+    } = require('../utils/db');
+
+    const sourceVideo = getSourceById(sourceVideoId);
+
+    if (!sourceVideo) {
+      await _sendMessage(
+        chatId,
+        `❌ Source video tidak ditemukan: ${_code(sourceVideoId)}`,
+        { parse_mode: 'MarkdownV2' }
+      );
+
+      return;
     }
+
+    updateSourceVideo(sourceVideoId, {
+      permission_status: 'approved',
+      allowed_to_clip: 1,
+      risk_level: 'low',
+      risk_notes: 'Manually approved by user via Telegram',
+    });
+
+    const clips = getClipsForSource(sourceVideoId);
+    const manualReviewClips = clips.filter((c) => c.status === 'manual_review');
+
+    let reEnqueuedCount = 0;
+
+    for (const clip of manualReviewClips) {
+      pushJob(
+        'clip_render',
+        {
+          clip_id: clip.id,
+          source_video_id: sourceVideoId,
+          correlation_id: clip.correlation_id,
+        },
+        {
+          correlationId: clip.correlation_id || uuidv4(),
+          priority: 'normal',
+        }
+      );
+
+      reEnqueuedCount++;
+    }
+
+    await _sendMessage(
+      chatId,
+      `✅ Source video disetujui\\!\n\n` +
+        `ID: ${_code(sourceVideoId)}\n` +
+        `Title: ${_escape(sourceVideo.video_title || 'N/A')}\n` +
+        `Channel: ${_escape(sourceVideo.channel_title || 'N/A')}\n\n` +
+        `Clips dari source ini sekarang bisa dirender\\.\n` +
+        `Re\\-enqueued ${_escape(reEnqueuedCount)} clip\\(s\\) untuk rendering\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+
+    logger.info('Source video approved via Telegram', {
+      agent: AGENT,
+      sourceVideoId,
+      reEnqueuedClips: reEnqueuedCount,
+    });
+  } catch (err) {
+    logger.error('Gagal approve source', {
+      agent: AGENT,
+      error_message: err.message,
+    });
+
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
-  await bot.sendMessage(chatId, '✅ Semua antrean dan output folder berhasil direset\\.', { parse_mode: 'MarkdownV2' });
 }
 
 // ─── Info messages ────────────────────────────────────────────────────────────
 
 async function _sendHelp(chatId) {
-  const msg = `🤖 *YouTube Shorts Agent*\n\nHalo\\! Pilih menu di bawah ini:`;
+  const msg = `🤖 *YouTube AI Clipper*\n\n` +
+    `Pilih menu di bawah ini:\n\n` +
+    `Commands:\n` +
+    `${_code('/trigger')} \\- Start clipper pipeline\n` +
+    `${_code('/status')} \\- Check clips status\n` +
+    `${_code('/approve_source <id>')} \\- Approve source video\n` +
+    `${_code('/queue')} \\- Check queue stats\n` +
+    `${_code('/help')} \\- Show this message`;
 
   const opts = {
     parse_mode: 'MarkdownV2',
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🚀 Mulai Riset', callback_data: 'trigger_research' }],
+        [{ text: '🎬 Trigger Clipper', callback_data: 'trigger_clipper' }],
         [{ text: '📋 Cek Queue', callback_data: 'check_queue' }],
-      ]
-    }
+      ],
+    },
   };
 
-  await bot.sendMessage(chatId, msg, opts);
+  await _sendMessage(chatId, msg, opts);
 }
 
 async function _sendStatus(chatId) {
   const rows = getDb().prepare(
-    `SELECT status, COUNT(*) as count FROM videos GROUP BY status`
+    'SELECT status, COUNT(*) as count FROM clips GROUP BY status'
   ).all();
 
-  const lines = rows.map((r) => `• ${r.status}: ${r.count}`).join('\n');
-  await bot.sendMessage(chatId, `📊 *Status Videos:*\n\n${lines || 'Belum ada video'}`,
-    { parse_mode: 'MarkdownV2' });
+  const lines = rows
+    .map((r) => `• ${_escape(r.status)}: ${_escape(r.count)}`)
+    .join('\n');
+
+  await _sendMessage(
+    chatId,
+    `📊 *Status Clips:*\n\n${lines || 'Belum ada clips'}`,
+    { parse_mode: 'MarkdownV2' }
+  );
 }
 
 async function _sendQueueStats(chatId) {
   const { getQueueStats } = require('../utils/queue');
   const stats = getQueueStats();
-  const lines = stats.map((r) => `• ${r.type}/${r.status}: ${r.count}`).join('\n');
-  await bot.sendMessage(chatId, `📋 *Queue Stats:*\n\n${lines || 'Queue kosong'}`,
-    { parse_mode: 'MarkdownV2' });
+
+  const lines = stats
+    .map((r) => `• ${_escape(r.type)}/${_escape(r.status)}: ${_escape(r.count)}`)
+    .join('\n');
+
+  await _sendMessage(
+    chatId,
+    `📋 *Queue Stats:*\n\n${lines || 'Queue kosong'}`,
+    { parse_mode: 'MarkdownV2' }
+  );
 }
 
 // ─── Pending state helpers ────────────────────────────────────────────────────
 
 function _setPendingState(chatId, state) {
-  // Clear old timeout
   _clearPendingState(chatId);
-
   pendingState.set(chatId, state);
 
-  // Auto-clear after timeout (rule 43)
   const timeout = setTimeout(() => {
     pendingState.delete(chatId);
-    bot.sendMessage(chatId, '⏱ Sesi input timeout\\. Silakan mulai lagi\\.',
-      { parse_mode: 'MarkdownV2' }).catch(() => {});
+
+    _sendMessage(
+      chatId,
+      '⏱ Sesi input timeout\\. Silakan mulai lagi\\.',
+      { parse_mode: 'MarkdownV2' }
+    ).catch(() => {});
   }, RESPONSE_TIMEOUT_MS);
 
   pendingTimeouts.set(chatId, timeout);
@@ -573,73 +890,97 @@ function _setPendingState(chatId, state) {
 
 function _clearPendingState(chatId) {
   pendingState.delete(chatId);
-  const t = pendingTimeouts.get(chatId);
-  if (t) {
-    clearTimeout(t);
+
+  const timeout = pendingTimeouts.get(chatId);
+  if (timeout) {
+    clearTimeout(timeout);
     pendingTimeouts.delete(chatId);
   }
 }
 
-// ─── Markdown escape ──────────────────────────────────────────────────────────
+// ─── Markdown helpers ─────────────────────────────────────────────────────────
 
 function _escape(text) {
-  return String(text || '').replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+  // Telegram MarkdownV2 reserved characters:
+  // _ * [ ] ( ) ~ ` > # + - = | { } . !
+  return String(text ?? '').replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
 
-function _escapeUrl(url) {
-  return String(url || '').replace(/[)]/g, '\\$&');
+function _code(text) {
+  return `\`${_escape(text)}\``;
 }
 
-function _splitMessage(text, maxLen) {
-  const chunks = [];
-  let i = 0;
-  while (i < text.length) {
-    chunks.push(text.slice(i, i + maxLen));
-    i += maxLen;
+function _stripMarkdownV2(text) {
+  return String(text ?? '')
+    .replace(/\\([_*\[\]()~`>#+\-=|{}.!])/g, '$1')
+    .replace(/\*/g, '')
+    .replace(/_/g, '')
+    .replace(/`/g, '');
+}
+
+function _number(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+async function _sendMessage(chatId, text, options = {}) {
+  try {
+    return await bot.sendMessage(chatId, text, options);
+  } catch (err) {
+    const message = String(err.message || '');
+
+    if (message.includes("can't parse entities") || message.includes('Bad Request:')) {
+      logger.warn('Telegram MarkdownV2 parse gagal, fallback plain text', {
+        agent: AGENT,
+        error_message: err.message,
+      });
+
+      const fallbackOptions = { ...options };
+      delete fallbackOptions.parse_mode;
+
+      return bot.sendMessage(chatId, _stripMarkdownV2(text), fallbackOptions);
+    }
+
+    throw err;
   }
-  return chunks;
 }
 
-// ─── Notify helper (used by other modules) ────────────────────────────────────
+// ─── Notify helper used by other modules ──────────────────────────────────────
 
 async function notify(message) {
   if (!bot) return;
+
   try {
-    await bot.sendMessage(config.telegram.chatId, _escape(message), { parse_mode: 'MarkdownV2' });
+    await _sendMessage(
+      config.telegram.chatId,
+      _escape(message),
+      { parse_mode: 'MarkdownV2' }
+    );
   } catch (err) {
-    logger.warn('Notif Telegram gagal', { agent: AGENT, error_message: err.message });
+    logger.warn('Notif Telegram gagal', {
+      agent: AGENT,
+      error_message: err.message,
+    });
   }
 }
 
 async function sendStartupMessage() {
   if (!bot) return;
-  const msg = `🤖 *YouTube Shorts Agent v1.0.0 aktif!*\nMode: *PRODUCTION*\n\nKetik /start untuk memulai produksi.`;
-  await bot.sendMessage(config.telegram.chatId, msg, { parse_mode: 'Markdown' });
+
+  const msg = `🤖 *YouTube AI Clipper v2\\.0\\.0 aktif\\!*\n\n` +
+    `Mode: ${config.dryRun ? '*DRY\\_RUN*' : '*PRODUCTION*'}\n\n` +
+    `Ketik ${_code('/start')} untuk memulai\\.`;
+
+  await _sendMessage(
+    config.telegram.chatId,
+    msg,
+    { parse_mode: 'MarkdownV2' }
+  );
 }
 
-async function sendResearchBriefing(videoId, jobId) {
-  if (!bot) return;
-  const research = readVideoJson(videoId, 'research.json');
-  if (!research) return;
-
-  const msg = `🔍 *Briefing Riset Selesai*\n\n` +
-    `📌 *Topik:* ${_escape(research.topic)}\n` +
-    `💡 *Alasan:* ${_escape(research.trending_reason)}\n\n` +
-    `Lanjut ke penulisan script?`;
-
-  const opts = {
-    parse_mode: 'MarkdownV2',
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '✅ GAS LANJUT', callback_data: `c_s|${jobId}` },
-          { text: '❌ CANCEL', callback_data: `x_s|${jobId}` },
-        ]
-      ]
-    }
-  };
-
-  await bot.sendMessage(config.telegram.chatId, msg, opts);
-}
-
-module.exports = { initBot, runTelegramAgent, notify, sendResearchBriefing, sendStartupMessage };
+module.exports = {
+  initBot,
+  runTelegramAgent,
+  notify,
+  sendStartupMessage,
+};
