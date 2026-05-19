@@ -53,6 +53,7 @@ const config = {
   // yt-dlp config
   ytdlp: {
     format: process.env.YTDLP_FORMAT || 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+    cookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER || null, // e.g., 'chrome', 'firefox'
   },
 
   // Whisper config

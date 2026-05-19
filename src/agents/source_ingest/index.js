@@ -95,11 +95,40 @@ async function _processSourceIngest(job) {
   logger.info('Mengunduh video dari YouTube', { agent: AGENT, sourceUrl });
 
   // Download video using yt-dlp
-  const videoPath = path.join(videoDir, 'source.mp4');
-  const metadata = await withRetry(
-    () => _downloadVideo(sourceUrl, videoPath),
+  const downloadResult = await withRetry(
+    () => _downloadVideo(sourceUrl, videoDir),
     { maxRetry: config.maxRetry, agent: AGENT, step: 'downloadVideo' }
   );
+
+  if (!downloadResult.success) {
+    // Mark source as failed
+    const { updateSourceVideo } = require('../../utils/db');
+    try {
+      insertSourceVideo({
+        id: sourceVideoId,
+        correlation_id: correlationId,
+        source_url: sourceUrl,
+        source_video_path: null,
+        source_duration: null,
+        channel_title: null,
+        video_title: null,
+        description: null,
+        permission_status: 'unknown',
+        allowed_to_clip: 0,
+        risk_level: 'manual_review',
+        risk_notes: 'Download failed',
+        status: 'failed',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      // Ignore if already exists
+    }
+    throw new Error(`Download gagal: ${downloadResult.error}`);
+  }
+
+  const videoPath = downloadResult.videoPath;
+  const metadata = downloadResult.metadata;
 
   const output = {
     source_video_id: sourceVideoId,
@@ -173,16 +202,26 @@ async function _processSourceIngest(job) {
 
 // ─── Download video with yt-dlp ──────────────────────────────────────────────
 
-function _downloadVideo(url, outputPath) {
+function _downloadVideo(url, videoDir) {
   return new Promise((resolve, reject) => {
+    const outputTemplate = path.join(videoDir, 'source.%(ext)s');
+    const finalPath = path.join(videoDir, 'source.mp4');
+
     const args = [
       url,
-      '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-      '-o', outputPath,
+      '-f', config.ytdlp.format,
+      '-o', outputTemplate,
       '--no-playlist',
       '--write-info-json',
       '--print-json',
     ];
+
+    // Add cookies if configured
+    if (config.ytdlp.cookiesFromBrowser) {
+      args.push('--cookies-from-browser', config.ytdlp.cookiesFromBrowser);
+    }
+
+    logger.info('Running yt-dlp', { agent: AGENT, command: `yt-dlp ${args.join(' ')}` });
 
     const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -192,12 +231,23 @@ function _downloadVideo(url, outputPath) {
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-    proc.on('close', (code) => {
+    proc.on('close', async (code) => {
+      logger.info('yt-dlp finished', { agent: AGENT, exitCode: code });
+
       if (code !== 0) {
-        return reject(new Error(`yt-dlp gagal (exit ${code}): ${stderr.slice(-300)}`));
+        logger.error('yt-dlp failed', { 
+          agent: AGENT, 
+          exitCode: code, 
+          stderr: stderr.slice(-500),
+          stdout: stdout.slice(-500),
+        });
+        return resolve({
+          success: false,
+          error: `yt-dlp exit code ${code}: ${stderr.slice(-300)}`,
+        });
       }
 
-      // Parse JSON output from yt-dlp
+      // Parse metadata from JSON output
       const lines = stdout.trim().split('\n').filter(Boolean);
       const lastLine = lines[lines.length - 1] || '{}';
       
@@ -206,25 +256,284 @@ function _downloadVideo(url, outputPath) {
         metadata = JSON.parse(lastLine);
       } catch (e) {
         // Fallback: read .info.json file
-        const infoPath = outputPath.replace('.mp4', '.info.json');
-        if (fs.existsSync(infoPath)) {
+        const files = fs.readdirSync(videoDir);
+        const infoFile = files.find(f => f.endsWith('.info.json'));
+        if (infoFile) {
+          const infoPath = path.join(videoDir, infoFile);
           metadata = JSON.parse(fs.readFileSync(infoPath, 'utf-8'));
           fs.unlinkSync(infoPath); // cleanup
         } else {
-          return reject(new Error('Gagal parse metadata dari yt-dlp'));
+          logger.error('Failed to parse yt-dlp metadata', { agent: AGENT, error: e.message });
+          return resolve({
+            success: false,
+            error: 'Failed to parse yt-dlp metadata',
+          });
         }
       }
 
+      // Locate downloaded file (ignore .part, .ytdl, .json, .txt)
+      const files = fs.readdirSync(videoDir);
+      const videoExts = ['.mp4', '.webm', '.mkv', '.mov', '.avi', '.flv'];
+      const downloadedFile = files.find(f => {
+        const ext = path.extname(f).toLowerCase();
+        return videoExts.includes(ext) && 
+               !f.includes('.part') && 
+               !f.includes('.ytdl') &&
+               f.startsWith('source.');
+      });
+
+      if (!downloadedFile) {
+        logger.error('No video file found after download', { 
+          agent: AGENT, 
+          videoDir, 
+          files: files.join(', '),
+        });
+        return resolve({
+          success: false,
+          error: 'No video file found after download',
+        });
+      }
+
+      const downloadedPath = path.join(videoDir, downloadedFile);
+      const stats = fs.statSync(downloadedPath);
+      
+      logger.info('Downloaded file found', { 
+        agent: AGENT, 
+        file: downloadedFile, 
+        size: stats.size,
+        sizeKB: Math.round(stats.size / 1024),
+      });
+
+      // Validate file size (must be > 100KB)
+      if (stats.size < 100 * 1024) {
+        logger.error('Downloaded file too small', { 
+          agent: AGENT, 
+          file: downloadedFile, 
+          size: stats.size,
+        });
+        return resolve({
+          success: false,
+          error: `Downloaded file too small: ${stats.size} bytes`,
+        });
+      }
+
+      // Validate with ffprobe
+      const probeResult = await _ffprobeVideo(downloadedPath);
+      if (!probeResult.success) {
+        logger.error('ffprobe validation failed', { 
+          agent: AGENT, 
+          file: downloadedFile, 
+          error: probeResult.error,
+        });
+        return resolve({
+          success: false,
+          error: `ffprobe failed: ${probeResult.error}`,
+        });
+      }
+
+      if (probeResult.duration < 1) {
+        logger.error('Video duration too short', { 
+          agent: AGENT, 
+          duration: probeResult.duration,
+        });
+        return resolve({
+          success: false,
+          error: `Video duration too short: ${probeResult.duration}s`,
+        });
+      }
+
+      logger.info('Downloaded file validated', { 
+        agent: AGENT, 
+        duration: probeResult.duration,
+        format: probeResult.format,
+      });
+
+      // If not source.mp4, remux/convert
+      if (downloadedFile !== 'source.mp4') {
+        logger.info('Converting to source.mp4', { agent: AGENT, from: downloadedFile });
+        
+        const convertResult = await _convertToMp4(downloadedPath, finalPath);
+        if (!convertResult.success) {
+          logger.error('Conversion failed', { agent: AGENT, error: convertResult.error });
+          return resolve({
+            success: false,
+            error: `Conversion failed: ${convertResult.error}`,
+          });
+        }
+
+        // Cleanup original file
+        try {
+          fs.unlinkSync(downloadedPath);
+        } catch (e) {
+          logger.warn('Failed to cleanup original file', { agent: AGENT, error: e.message });
+        }
+      } else {
+        // Already source.mp4, no conversion needed
+        logger.info('File already source.mp4, no conversion needed', { agent: AGENT });
+      }
+
+      // Final validation of source.mp4
+      const finalProbe = await _ffprobeVideo(finalPath);
+      if (!finalProbe.success) {
+        logger.error('Final source.mp4 validation failed', { 
+          agent: AGENT, 
+          error: finalProbe.error,
+        });
+        return resolve({
+          success: false,
+          error: `Final validation failed: ${finalProbe.error}`,
+        });
+      }
+
+      logger.info('Final source.mp4 validated', { 
+        agent: AGENT, 
+        path: finalPath,
+        duration: finalProbe.duration,
+        size: fs.statSync(finalPath).size,
+      });
+
       resolve({
-        duration: metadata.duration || 0,
-        title: metadata.title || 'Unknown',
-        channel: metadata.uploader || metadata.channel || 'Unknown',
-        description: (metadata.description || '').slice(0, 500),
+        success: true,
+        videoPath: finalPath,
+        metadata: {
+          duration: finalProbe.duration,
+          title: metadata.title || 'Unknown',
+          channel: metadata.uploader || metadata.channel || 'Unknown',
+          description: (metadata.description || '').slice(0, 500),
+        },
       });
     });
 
     proc.on('error', (err) => {
-      reject(new Error(`Gagal spawn yt-dlp: ${err.message}`));
+      logger.error('Failed to spawn yt-dlp', { agent: AGENT, error: err.message });
+      resolve({
+        success: false,
+        error: `Failed to spawn yt-dlp: ${err.message}`,
+      });
+    });
+  });
+}
+
+// ─── Validate video with ffprobe ─────────────────────────────────────────────
+
+function _ffprobeVideo(videoPath) {
+  return new Promise((resolve) => {
+    const proc = spawn('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration,format_name',
+      '-of', 'json',
+      videoPath,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        return resolve({
+          success: false,
+          error: stderr.slice(-300) || 'ffprobe failed',
+        });
+      }
+
+      try {
+        const data = JSON.parse(stdout);
+        const duration = parseFloat(data.format?.duration || 0);
+        const format = data.format?.format_name || 'unknown';
+
+        resolve({
+          success: true,
+          duration,
+          format,
+        });
+      } catch (e) {
+        resolve({
+          success: false,
+          error: `Failed to parse ffprobe output: ${e.message}`,
+        });
+      }
+    });
+
+    proc.on('error', (err) => {
+      resolve({
+        success: false,
+        error: `Failed to spawn ffprobe: ${err.message}`,
+      });
+    });
+  });
+}
+
+// ─── Convert video to MP4 ────────────────────────────────────────────────────
+
+function _convertToMp4(inputPath, outputPath) {
+  return new Promise((resolve) => {
+    // Try copy codec first (fast)
+    logger.info('Attempting fast remux with -c copy', { agent: AGENT });
+    
+    const procCopy = spawn('ffmpeg', [
+      '-y',
+      '-i', inputPath,
+      '-c', 'copy',
+      '-movflags', '+faststart',
+      outputPath,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stderr = '';
+    procCopy.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    procCopy.on('close', (code) => {
+      if (code === 0) {
+        logger.info('Fast remux successful', { agent: AGENT });
+        return resolve({ success: true });
+      }
+
+      // Copy failed, try re-encode
+      logger.warn('Fast remux failed, trying re-encode', { agent: AGENT, error: stderr.slice(-300) });
+      
+      const procEncode = spawn('ffmpeg', [
+        '-y',
+        '-i', inputPath,
+        '-c:v', 'libx264',
+        '-preset', 'fast',
+        '-crf', '23',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        outputPath,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      let stderrEncode = '';
+      procEncode.stderr.on('data', (d) => { stderrEncode += d.toString(); });
+
+      procEncode.on('close', (codeEncode) => {
+        if (codeEncode === 0) {
+          logger.info('Re-encode successful', { agent: AGENT });
+          return resolve({ success: true });
+        }
+
+        logger.error('Re-encode failed', { agent: AGENT, error: stderrEncode.slice(-300) });
+        resolve({
+          success: false,
+          error: stderrEncode.slice(-300) || 'ffmpeg re-encode failed',
+        });
+      });
+
+      procEncode.on('error', (err) => {
+        resolve({
+          success: false,
+          error: `Failed to spawn ffmpeg for re-encode: ${err.message}`,
+        });
+      });
+    });
+
+    procCopy.on('error', (err) => {
+      resolve({
+        success: false,
+        error: `Failed to spawn ffmpeg for copy: ${err.message}`,
+      });
     });
   });
 }
