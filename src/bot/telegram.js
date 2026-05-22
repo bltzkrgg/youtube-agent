@@ -26,6 +26,9 @@ const pendingState = new Map();
 const pendingTimeouts = new Map();
 const RESPONSE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
+// Confirmation state for destructive operations
+const confirmationState = new Map();
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 function initBot() {
@@ -632,11 +635,11 @@ async function _handleCommand(chatId, text, msg) {
       break;
 
     case '/status':
-      await _sendStatus(chatId);
+      await _sendDetailedStatus(chatId);
       break;
 
     case '/queue':
-      await _sendQueueStats(chatId);
+      await _sendDetailedQueueStats(chatId);
       break;
 
     case '/trigger':
@@ -659,10 +662,34 @@ async function _handleCommand(chatId, text, msg) {
       }
       break;
 
+    case '/clear_queue':
+      await _handleClearQueue(chatId);
+      break;
+
+    case '/clear_dead':
+      await _handleClearDead(chatId);
+      break;
+
+    case '/clear_memory':
+      await _handleClearMemory(chatId);
+      break;
+
+    case '/clear_orphans':
+      await _handleClearOrphans(chatId);
+      break;
+
+    case '/reset_test':
+      await _handleResetTest(chatId);
+      break;
+
+    case 'CONFIRM_RESET':
+      await _handleResetTestConfirm(chatId);
+      break;
+
     default:
       await _sendMessage(
         chatId,
-        `❓ Perintah tidak dikenal: ${_escape(cmd)}`,
+        `❓ Perintah tidak dikenal: ${_escape(cmd)}\n\nKetik ${_code('/help')} untuk melihat daftar perintah\\.`,
         { parse_mode: 'MarkdownV2' }
       );
   }
@@ -813,16 +840,278 @@ async function _handleApproveSource(chatId, sourceVideoId) {
   }
 }
 
+// ─── Admin Commands ──────────────────────────────────────────────────────────
+
+async function _handleClearQueue(chatId) {
+  try {
+    const { clearJobs } = require('../utils/db');
+    const count = clearJobs();
+    
+    await _sendMessage(
+      chatId,
+      `✅ Queue dibersihkan\\!\n\n` +
+        `🗑 ${_escape(count)} job\\(s\\) dihapus dari queue\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    
+    logger.info('Queue cleared via Telegram', { agent: AGENT, count });
+  } catch (err) {
+    logger.error('Gagal clear queue', { agent: AGENT, error_message: err.message });
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+}
+
+async function _handleClearDead(chatId) {
+  try {
+    const { clearDeadLetters } = require('../utils/db');
+    const count = clearDeadLetters();
+    
+    await _sendMessage(
+      chatId,
+      `✅ Dead letter queue dibersihkan\\!\n\n` +
+        `🗑 ${_escape(count)} dead letter job\\(s\\) dihapus\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    
+    logger.info('Dead letter cleared via Telegram', { agent: AGENT, count });
+  } catch (err) {
+    logger.error('Gagal clear dead letter', { agent: AGENT, error_message: err.message });
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+}
+
+async function _handleClearMemory(chatId) {
+  try {
+    const { clearMemory } = require('../utils/db');
+    const count = clearMemory();
+    
+    await _sendMessage(
+      chatId,
+      `✅ Memory dibersihkan\\!\n\n` +
+        `🗑 ${_escape(count)} memory pattern\\(s\\) dihapus\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    
+    logger.info('Memory cleared via Telegram', { agent: AGENT, count });
+  } catch (err) {
+    logger.error('Gagal clear memory', { agent: AGENT, error_message: err.message });
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+}
+
+async function _handleClearOrphans(chatId) {
+  try {
+    const { findOrphanJobs, deleteJobsByIds } = require('../utils/db');
+    
+    await _sendMessage(
+      chatId,
+      '🔍 Mencari orphan jobs\\.\\.\\.',
+      { parse_mode: 'MarkdownV2' }
+    );
+    
+    const orphans = findOrphanJobs();
+    
+    if (orphans.length === 0) {
+      await _sendMessage(
+        chatId,
+        '✅ Tidak ada orphan jobs ditemukan\\.',
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+    
+    // Group by reason
+    const byReason = {};
+    const byType = {};
+    
+    for (const { job, reason } of orphans) {
+      byReason[reason] = (byReason[reason] || 0) + 1;
+      byType[job.type] = (byType[job.type] || 0) + 1;
+    }
+    
+    const jobIds = orphans.map(o => o.job.id);
+    const deleted = deleteJobsByIds(jobIds);
+    
+    let msg = `🗑 *Orphan Jobs Dihapus*\n\n` +
+      `Total ditemukan: ${_escape(orphans.length)}\n` +
+      `Total dihapus: ${_escape(deleted)}\n\n` +
+      `*Breakdown by Reason:*\n`;
+    
+    for (const [reason, count] of Object.entries(byReason)) {
+      msg += `• ${_escape(reason)}: ${_escape(count)}\n`;
+    }
+    
+    msg += `\n*Breakdown by Type:*\n`;
+    for (const [type, count] of Object.entries(byType)) {
+      msg += `• ${_escape(type)}: ${_escape(count)}\n`;
+    }
+    
+    await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+    
+    logger.info('Orphan jobs cleared via Telegram', {
+      agent: AGENT,
+      found: orphans.length,
+      deleted,
+      byReason,
+      byType,
+    });
+  } catch (err) {
+    logger.error('Gagal clear orphans', { agent: AGENT, error_message: err.message, stack: err.stack });
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+}
+
+async function _handleResetTest(chatId) {
+  confirmationState.set(chatId, {
+    action: 'reset_test',
+    timestamp: Date.now(),
+  });
+  
+  setTimeout(() => {
+    confirmationState.delete(chatId);
+  }, 60000); // 1 minute timeout
+  
+  await _sendMessage(
+    chatId,
+    `⚠️ *DESTRUCTIVE OPERATION*\n\n` +
+      `Ini akan menghapus:\n` +
+      `• Semua jobs\n` +
+      `• Semua dead\\_letter\n` +
+      `• Semua source\\_videos\n` +
+      `• Semua clips\n` +
+      `• Semua analytics\n` +
+      `• Semua memory\n` +
+      `• Folder output/ dan cache/ \\(jika aman\\)\n\n` +
+      `Ketik ${_code('CONFIRM_RESET')} dalam 1 menit untuk melanjutkan\\.\n` +
+      `Atau ketik ${_code('/skip')} untuk membatalkan\\.`,
+    { parse_mode: 'MarkdownV2' }
+  );
+}
+
+async function _handleResetTestConfirm(chatId) {
+  const state = confirmationState.get(chatId);
+  
+  if (!state || state.action !== 'reset_test') {
+    await _sendMessage(
+      chatId,
+      `⚠️ Tidak ada operasi reset yang menunggu konfirmasi\\.\n\nKetik ${_code('/reset_test')} terlebih dahulu\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
+  
+  confirmationState.delete(chatId);
+  
+  try {
+    const { clearAllTestState } = require('../utils/db');
+    const fs = require('fs');
+    const path = require('path');
+    
+    await _sendMessage(
+      chatId,
+      '🗑 Menghapus semua data test\\.\\.\\.',
+      { parse_mode: 'MarkdownV2' }
+    );
+    
+    const counts = clearAllTestState();
+    
+    // Clear output and cache folders
+    let filesDeleted = 0;
+    
+    try {
+      const outputPath = config.paths.output;
+      if (fs.existsSync(outputPath) && outputPath.includes('output')) {
+        const files = fs.readdirSync(outputPath);
+        for (const file of files) {
+          const filePath = path.join(outputPath, file);
+          if (fs.statSync(filePath).isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+            filesDeleted++;
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn('Gagal hapus output folder', { agent: AGENT, error: e.message });
+    }
+    
+    try {
+      const cachePath = config.paths.cache;
+      if (fs.existsSync(cachePath) && cachePath.includes('cache')) {
+        const files = fs.readdirSync(cachePath);
+        for (const file of files) {
+          const filePath = path.join(cachePath, file);
+          fs.rmSync(filePath, { recursive: true, force: true });
+          filesDeleted++;
+        }
+      }
+    } catch (e) {
+      logger.warn('Gagal hapus cache folder', { agent: AGENT, error: e.message });
+    }
+    
+    // Recreate folders
+    fs.mkdirSync(config.paths.output, { recursive: true });
+    fs.mkdirSync(config.paths.cache, { recursive: true });
+    
+    let msg = `✅ *Test State Reset Complete*\n\n` +
+      `*Database Rows Deleted:*\n` +
+      `• Jobs: ${_escape(counts.jobs)}\n` +
+      `• Dead Letter: ${_escape(counts.dead_letter)}\n` +
+      `• Source Videos: ${_escape(counts.source_videos)}\n` +
+      `• Clips: ${_escape(counts.clips)}\n` +
+      `• Analytics: ${_escape(counts.analytics)}\n` +
+      `• Memory: ${_escape(counts.memory)}\n\n` +
+      `*Files/Folders Deleted:*\n` +
+      `• ${_escape(filesDeleted)} folder\\(s\\) dari output/cache\n\n` +
+      `System siap untuk test baru\\.`;
+    
+    await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+    
+    logger.info('Test state reset via Telegram', {
+      agent: AGENT,
+      counts,
+      filesDeleted,
+    });
+  } catch (err) {
+    logger.error('Gagal reset test state', { agent: AGENT, error_message: err.message, stack: err.stack });
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+}
+
 // ─── Info messages ────────────────────────────────────────────────────────────
 
 async function _sendHelp(chatId) {
-  const msg = `🤖 *YouTube AI Clipper*\n\n` +
-    `Pilih menu di bawah ini:\n\n` +
-    `Commands:\n` +
+  const msg = `🤖 *YouTube AI Clipper v2\\.0*\n\n` +
+    `*Main Commands:*\n` +
     `${_code('/trigger')} \\- Start clipper pipeline\n` +
-    `${_code('/status')} \\- Check clips status\n` +
-    `${_code('/approve_source <id>')} \\- Approve source video\n` +
-    `${_code('/queue')} \\- Check queue stats\n` +
+    `${_code('/status')} \\- Detailed system status\n` +
+    `${_code('/queue')} \\- Detailed queue stats\n` +
+    `${_code('/approve_source <id>')} \\- Approve source video\n\n` +
+    `*Admin Commands:*\n` +
+    `${_code('/clear_queue')} \\- Clear all pending/processing jobs\n` +
+    `${_code('/clear_dead')} \\- Clear dead letter queue\n` +
+    `${_code('/clear_memory')} \\- Clear memory patterns\n` +
+    `${_code('/clear_orphans')} \\- Remove orphan jobs\n` +
+    `${_code('/reset_test')} \\- Reset all test state \\(destructive\\)\n\n` +
     `${_code('/help')} \\- Show this message`;
 
   const opts = {
@@ -838,35 +1127,212 @@ async function _sendHelp(chatId) {
   await _sendMessage(chatId, msg, opts);
 }
 
+async function _sendDetailedStatus(chatId) {
+  try {
+    const { countRows, getDeadLetterSummary } = require('../utils/db');
+    const db = getDb();
+    
+    // Source videos by status
+    const sourcesByStatus = db.prepare(`
+      SELECT status, COUNT(*) as count 
+      FROM source_videos 
+      GROUP BY status
+    `).all();
+    
+    // Clips by status
+    const clipsByStatus = db.prepare(`
+      SELECT status, COUNT(*) as count 
+      FROM clips 
+      GROUP BY status
+    `).all();
+    
+    // Jobs by type and status
+    const jobsByType = db.prepare(`
+      SELECT type, status, COUNT(*) as count 
+      FROM jobs 
+      GROUP BY type, status
+    `).all();
+    
+    const deadLetterSummary = getDeadLetterSummary();
+    
+    // Calculate orphans (quick check)
+    let orphanCount = 0;
+    try {
+      const { findOrphanJobs } = require('../utils/db');
+      orphanCount = findOrphanJobs().length;
+    } catch (e) {
+      // Ignore if fails
+    }
+    
+    let msg = `📊 *System Status*\n\n`;
+    
+    // Mode
+    msg += `*Mode:* ${config.dryRun ? '🔵 DRY\\_RUN' : '🟢 PRODUCTION'}\n\n`;
+    
+    // Source Videos
+    msg += `*Source Videos:*\n`;
+    if (sourcesByStatus.length > 0) {
+      for (const row of sourcesByStatus) {
+        msg += `• ${_escape(row.status)}: ${_escape(row.count)}\n`;
+      }
+    } else {
+      msg += `• None\n`;
+    }
+    
+    // Clips
+    msg += `\n*Clips:*\n`;
+    if (clipsByStatus.length > 0) {
+      for (const row of clipsByStatus) {
+        msg += `• ${_escape(row.status)}: ${_escape(row.count)}\n`;
+      }
+    } else {
+      msg += `• None\n`;
+    }
+    
+    // Jobs summary
+    msg += `\n*Jobs:*\n`;
+    if (jobsByType.length > 0) {
+      const jobSummary = {};
+      for (const row of jobsByType) {
+        const key = `${row.type}/${row.status}`;
+        jobSummary[key] = row.count;
+      }
+      
+      const entries = Object.entries(jobSummary).slice(0, 10);
+      for (const [key, count] of entries) {
+        msg += `• ${_escape(key)}: ${_escape(count)}\n`;
+      }
+      
+      if (Object.keys(jobSummary).length > 10) {
+        msg += `• \\.\\.\\. and ${_escape(Object.keys(jobSummary).length - 10)} more\n`;
+      }
+    } else {
+      msg += `• None\n`;
+    }
+    
+    // Dead letter
+    msg += `\n*Dead Letter:* ${_escape(deadLetterSummary.total)}\n`;
+    
+    // Orphans
+    if (orphanCount > 0) {
+      msg += `\n⚠️ *Orphan Jobs:* ${_escape(orphanCount)}\n`;
+      msg += `Use ${_code('/clear_orphans')} to remove\\.`;
+    }
+    
+    // Recent failures
+    if (deadLetterSummary.recent.length > 0) {
+      msg += `\n\n*Recent Failures:*\n`;
+      for (const item of deadLetterSummary.recent.slice(0, 3)) {
+        const errorShort = String(item.error || 'Unknown').slice(0, 50);
+        msg += `• ${_escape(item.type)}: ${_escape(errorShort)}\n`;
+      }
+    }
+    
+    await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+  } catch (err) {
+    logger.error('Gagal get status', { agent: AGENT, error_message: err.message });
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+}
+
+async function _sendDetailedQueueStats(chatId) {
+  try {
+    const { getDetailedJobStats, countRows } = require('../utils/db');
+    const stats = getDetailedJobStats();
+    
+    let msg = `📋 *Queue Stats*\n\n`;
+    
+    // By status
+    if (stats.byStatus.length > 0) {
+      msg += `*By Status:*\n`;
+      for (const row of stats.byStatus) {
+        msg += `• ${_escape(row.status)}: ${_escape(row.count)}\n`;
+      }
+    } else {
+      msg += `Queue kosong\n`;
+    }
+    
+    // By type/status
+    if (stats.byTypeStatus.length > 0) {
+      msg += `\n*By Type/Status:*\n`;
+      for (const row of stats.byTypeStatus.slice(0, 15)) {
+        msg += `• ${_escape(row.type)}/${_escape(row.status)}: ${_escape(row.count)}\n`;
+      }
+      
+      if (stats.byTypeStatus.length > 15) {
+        msg += `• \\.\\.\\. and ${_escape(stats.byTypeStatus.length - 15)} more\n`;
+      }
+    }
+    
+    // Retry stats
+    if (stats.retryStats) {
+      const avgRetry = Number(stats.retryStats.avg_retry || 0).toFixed(2);
+      msg += `\n*Retry Stats:*\n`;
+      msg += `• Avg retry: ${_escape(avgRetry)}\n`;
+      msg += `• Max retry: ${_escape(stats.retryStats.max_retry || 0)}\n`;
+      msg += `• Jobs retried: ${_escape(stats.retryStats.retried_count || 0)}\n`;
+    }
+    
+    // Oldest jobs
+    if (stats.oldestPending) {
+      const age = _getAge(stats.oldestPending.created_at);
+      msg += `\n*Oldest Pending:*\n`;
+      msg += `• Type: ${_escape(stats.oldestPending.type)}\n`;
+      msg += `• Age: ${_escape(age)}\n`;
+    }
+    
+    if (stats.oldestProcessing) {
+      const age = _getAge(stats.oldestProcessing.locked_at);
+      msg += `\n*Oldest Processing:*\n`;
+      msg += `• Type: ${_escape(stats.oldestProcessing.type)}\n`;
+      msg += `• Age: ${_escape(age)}\n`;
+    }
+    
+    // Dead letter count
+    const deadCount = countRows('dead_letter');
+    if (deadCount > 0) {
+      msg += `\n*Dead Letter:* ${_escape(deadCount)}\n`;
+    }
+    
+    await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+  } catch (err) {
+    logger.error('Gagal get queue stats', { agent: AGENT, error_message: err.message });
+    await _sendMessage(
+      chatId,
+      `❌ Error: ${_escape(err.message)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+}
+
+function _getAge(timestamp) {
+  if (!timestamp) return 'unknown';
+  
+  const now = new Date();
+  const then = new Date(timestamp);
+  const diffMs = now - then;
+  
+  const minutes = Math.floor(diffMs / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  
+  if (days > 0) return `${days}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  return `${minutes}m`;
+}
+
 async function _sendStatus(chatId) {
-  const rows = getDb().prepare(
-    'SELECT status, COUNT(*) as count FROM clips GROUP BY status'
-  ).all();
-
-  const lines = rows
-    .map((r) => `• ${_escape(r.status)}: ${_escape(r.count)}`)
-    .join('\n');
-
-  await _sendMessage(
-    chatId,
-    `📊 *Status Clips:*\n\n${lines || 'Belum ada clips'}`,
-    { parse_mode: 'MarkdownV2' }
-  );
+  // Legacy function - redirect to detailed
+  await _sendDetailedStatus(chatId);
 }
 
 async function _sendQueueStats(chatId) {
-  const { getQueueStats } = require('../utils/queue');
-  const stats = getQueueStats();
-
-  const lines = stats
-    .map((r) => `• ${_escape(r.type)}/${_escape(r.status)}: ${_escape(r.count)}`)
-    .join('\n');
-
-  await _sendMessage(
-    chatId,
-    `📋 *Queue Stats:*\n\n${lines || 'Queue kosong'}`,
-    { parse_mode: 'MarkdownV2' }
-  );
+  // Legacy function - redirect to detailed
+  await _sendDetailedQueueStats(chatId);
 }
 
 // ─── Pending state helpers ────────────────────────────────────────────────────

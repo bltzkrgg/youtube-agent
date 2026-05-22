@@ -455,6 +455,218 @@ function closeDb() {
   }
 }
 
+// ─── Admin Operations ────────────────────────────────────────────────────────
+
+function countRows(table) {
+  const db = getDb();
+  try {
+    const result = db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get();
+    return result.count;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function clearJobs() {
+  const db = getDb();
+  const count = countRows('jobs');
+  db.prepare('DELETE FROM jobs WHERE status IN (?, ?, ?)').run('pending', 'processing', 'failed');
+  return count;
+}
+
+function clearDeadLetters() {
+  const db = getDb();
+  const count = countRows('dead_letter');
+  db.prepare('DELETE FROM dead_letter').run();
+  return count;
+}
+
+function clearMemory() {
+  const db = getDb();
+  const count = countRows('memory');
+  db.prepare('DELETE FROM memory').run();
+  return count;
+}
+
+function clearAllTestState() {
+  const db = getDb();
+  const counts = {
+    jobs: countRows('jobs'),
+    dead_letter: countRows('dead_letter'),
+    source_videos: countRows('source_videos'),
+    clips: countRows('clips'),
+    analytics: countRows('analytics'),
+    memory: countRows('memory'),
+  };
+  
+  db.prepare('DELETE FROM jobs').run();
+  db.prepare('DELETE FROM dead_letter').run();
+  db.prepare('DELETE FROM analytics').run();
+  db.prepare('DELETE FROM memory').run();
+  db.prepare('DELETE FROM clips').run();
+  db.prepare('DELETE FROM source_videos').run();
+  
+  return counts;
+}
+
+function getDetailedJobStats() {
+  const db = getDb();
+  
+  const byTypeStatus = db.prepare(`
+    SELECT type, status, COUNT(*) as count 
+    FROM jobs 
+    GROUP BY type, status 
+    ORDER BY type, status
+  `).all();
+  
+  const byStatus = db.prepare(`
+    SELECT status, COUNT(*) as count 
+    FROM jobs 
+    GROUP BY status
+  `).all();
+  
+  const retryStats = db.prepare(`
+    SELECT 
+      AVG(retry_count) as avg_retry,
+      MAX(retry_count) as max_retry,
+      SUM(CASE WHEN retry_count > 0 THEN 1 ELSE 0 END) as retried_count
+    FROM jobs
+  `).get();
+  
+  const oldestPending = db.prepare(`
+    SELECT type, created_at 
+    FROM jobs 
+    WHERE status = 'pending' 
+    ORDER BY created_at ASC 
+    LIMIT 1
+  `).get();
+  
+  const oldestProcessing = db.prepare(`
+    SELECT type, locked_at 
+    FROM jobs 
+    WHERE status = 'processing' 
+    ORDER BY locked_at ASC 
+    LIMIT 1
+  `).get();
+  
+  return {
+    byTypeStatus,
+    byStatus,
+    retryStats,
+    oldestPending,
+    oldestProcessing,
+  };
+}
+
+function getDeadLetterSummary() {
+  const db = getDb();
+  
+  const total = countRows('dead_letter');
+  
+  const byType = db.prepare(`
+    SELECT type, COUNT(*) as count 
+    FROM dead_letter 
+    GROUP BY type 
+    ORDER BY count DESC
+  `).all();
+  
+  const recent = db.prepare(`
+    SELECT type, error, failed_at 
+    FROM dead_letter 
+    ORDER BY failed_at DESC 
+    LIMIT 5
+  `).all();
+  
+  return { total, byType, recent };
+}
+
+function deleteJobsByIds(jobIds) {
+  if (!Array.isArray(jobIds) || jobIds.length === 0) return 0;
+  
+  const db = getDb();
+  const placeholders = jobIds.map(() => '?').join(',');
+  const stmt = db.prepare(`DELETE FROM jobs WHERE id IN (${placeholders})`);
+  const result = stmt.run(...jobIds);
+  return result.changes;
+}
+
+function findOrphanJobs() {
+  const db = getDb();
+  const fs = require('fs');
+  const path = require('path');
+  const { safeParseJson } = require('./safeJson');
+  
+  const allJobs = db.prepare('SELECT * FROM jobs').all();
+  const orphans = [];
+  
+  for (const job of allJobs) {
+    let payload;
+    try {
+      payload = safeParseJson(job.payload, 'findOrphanJobs');
+    } catch (e) {
+      // Invalid payload = orphan
+      orphans.push({ job, reason: 'invalid_payload' });
+      continue;
+    }
+    
+    if (!payload) {
+      orphans.push({ job, reason: 'null_payload' });
+      continue;
+    }
+    
+    // Check transcript/scene_detect/clip_planner jobs
+    if (['transcript', 'scene_detect', 'clip_planner'].includes(job.type)) {
+      const sourceVideoId = payload.source_video_id;
+      
+      if (!sourceVideoId) {
+        orphans.push({ job, reason: 'missing_source_video_id' });
+        continue;
+      }
+      
+      // Check if source_video exists in DB
+      const sourceVideo = db.prepare('SELECT id FROM source_videos WHERE id = ?').get(sourceVideoId);
+      if (!sourceVideo) {
+        orphans.push({ job, reason: 'source_video_not_found' });
+        continue;
+      }
+      
+      // Check if source_ingest.json exists
+      const sourceIngestPath = path.join(config.paths.output, sourceVideoId, 'source_ingest.json');
+      if (!fs.existsSync(sourceIngestPath)) {
+        orphans.push({ job, reason: 'source_ingest_json_missing' });
+        continue;
+      }
+    }
+    
+    // Check clip_render/telegram_clip jobs
+    if (['clip_render', 'telegram_clip'].includes(job.type)) {
+      const clipId = payload.clip_id;
+      
+      if (!clipId) {
+        orphans.push({ job, reason: 'missing_clip_id' });
+        continue;
+      }
+      
+      // Check if clip exists in DB
+      const clip = db.prepare('SELECT id, status FROM clips WHERE id = ?').get(clipId);
+      if (!clip) {
+        orphans.push({ job, reason: 'clip_not_found' });
+        continue;
+      }
+      
+      // telegram_clip should not be sent for already reviewed clips
+      if (job.type === 'telegram_clip') {
+        if (['pending_review', 'approved', 'rejected', 'uploaded'].includes(clip.status)) {
+          orphans.push({ job, reason: 'clip_already_reviewed' });
+          continue;
+        }
+      }
+    }
+  }
+  
+  return orphans;
+}
+
 module.exports = {
   getDb,
   // Jobs
@@ -470,6 +682,9 @@ module.exports = {
   upsertMemory, getAllMemory, getTopPatterns, getAvoidPatterns,
   // Analytics
   insertAnalytics, getAnalyticsByClip,
+  // Admin Operations
+  countRows, clearJobs, clearDeadLetters, clearMemory, clearAllTestState,
+  getDetailedJobStats, getDeadLetterSummary, deleteJobsByIds, findOrphanJobs,
   // Lifecycle
   closeDb,
 };
