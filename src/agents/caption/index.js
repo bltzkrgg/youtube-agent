@@ -49,9 +49,11 @@ async function generateCaptions(clipPlan, transcript) {
       srt_format: _generateSRT(wordCaptions),
     };
   } catch (err) {
+    const is429 = err.response?.status === 429 || err.message?.includes('429');
     logger.error('Caption generation gagal', { 
       agent: AGENT, 
-      error_message: err.message 
+      error_message: err.message,
+      is429 
     });
     return _generateFallbackCaptions(clipPlan);
   }
@@ -126,8 +128,24 @@ Hanya JSON, tanpa teks lain.`;
         'X-Title': 'YouTube Clipper Agent',
       },
       timeout: 30000,
+      validateStatus: (status) => status < 500, // Don't throw on 4xx
     }
   );
+
+  // Handle 429 rate limit
+  if (res.status === 429) {
+    const retryAfter = res.headers['retry-after'] || 60;
+    const error = new Error(`Rate limit exceeded. Retry after ${retryAfter}s`);
+    error.response = { status: 429 };
+    throw error;
+  }
+
+  // Handle other 4xx errors
+  if (res.status >= 400) {
+    const error = new Error(`OpenRouter error: ${res.status} ${res.statusText}`);
+    error.response = { status: res.status };
+    throw error;
+  }
 
   const raw = res.data?.choices?.[0]?.message?.content || '';
   const parsed = extractJson(raw, `${AGENT}:generateCaptionPlan`);

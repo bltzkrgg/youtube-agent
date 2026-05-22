@@ -32,16 +32,24 @@ async function criticizeClipMoment(clipPlan, transcript, sourceIngest) {
 
     return assessment;
   } catch (err) {
+    // Check for 429 rate limit
+    const is429 = err.response?.status === 429 || err.message?.includes('429');
+    
     logger.error('Critic assessment gagal', { 
       agent: AGENT, 
-      error_message: err.message 
+      error_message: err.message,
+      status: err.response?.status,
+      is429 
     });
-    // Return safe default
+    
+    // Return safe default with valid structure
     return {
       risk_level: 'unknown',
       is_safe: false,
-      concerns: ['Assessment gagal, review manual diperlukan'],
-      recommendations: ['Manual review sebelum publish'],
+      concerns: is429 ? ['Rate limit reached, manual review required'] : ['Assessment failed, manual review required'],
+      recommendations: ['Manual review before publish'],
+      fact_check_needed: false,
+      context_warning: null,
     };
   }
 }
@@ -149,8 +157,24 @@ Hanya JSON, tanpa teks lain.`;
         'X-Title': 'YouTube Clipper Agent',
       },
       timeout: 30000,
+      validateStatus: (status) => status < 500, // Don't throw on 4xx
     }
   );
+
+  // Handle 429 rate limit
+  if (res.status === 429) {
+    const retryAfter = res.headers['retry-after'] || 60;
+    const error = new Error(`Rate limit exceeded. Retry after ${retryAfter}s`);
+    error.response = { status: 429 };
+    throw error;
+  }
+
+  // Handle other 4xx errors
+  if (res.status >= 400) {
+    const error = new Error(`OpenRouter error: ${res.status} ${res.statusText}`);
+    error.response = { status: res.status };
+    throw error;
+  }
 
   const raw = res.data?.choices?.[0]?.message?.content || '';
   const parsed = extractJson(raw, `${AGENT}:assessRisk`);
@@ -165,6 +189,7 @@ Hanya JSON, tanpa teks lain.`;
     parsed.risk_level = 'medium'; // Default to medium if invalid
   }
 
+  // Ensure all required fields with safe defaults
   return {
     risk_level: parsed.risk_level,
     is_safe: parsed.is_safe !== false, // Default true jika tidak ada

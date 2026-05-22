@@ -63,16 +63,27 @@ async function scoreClipMoment(clipPlan, transcript, sceneDetect, sourceIngest) 
       );
       scores.push({ persona: persona.name, ...score });
     } catch (err) {
+      const is429 = err.response?.status === 429 || err.message?.includes('429');
       logger.warn(`Scoring gagal untuk persona ${persona.name}`, { 
         agent: AGENT, 
-        error_message: err.message 
+        error_message: err.message,
+        is429 
       });
       // Continue dengan persona lain
     }
   }
 
   if (scores.length === 0) {
-    throw new Error('Semua persona scoring gagal');
+    // All personas failed - return safe fallback
+    logger.warn('All persona scoring failed, using fallback', { agent: AGENT });
+    return {
+      final_score: clipPlan.score || 50,
+      confidence: 0,
+      persona_scores: [],
+      strengths: [],
+      weaknesses: ['Scoring unavailable - using default score'],
+      reasoning: 'Scoring service unavailable',
+    };
   }
 
   // Aggregate scores
@@ -96,6 +107,7 @@ async function scoreClipMoment(clipPlan, transcript, sceneDetect, sourceIngest) 
     persona_scores: scores,
     strengths,
     weaknesses,
+    reasoning: `Scored by ${scores.length}/${SCORING_PERSONAS.length} personas`,
   };
 }
 
@@ -168,8 +180,24 @@ Hanya JSON, tanpa teks lain.`;
         'X-Title': 'YouTube Clipper Agent',
       },
       timeout: 30000,
+      validateStatus: (status) => status < 500, // Don't throw on 4xx
     }
   );
+
+  // Handle 429 rate limit
+  if (res.status === 429) {
+    const retryAfter = res.headers['retry-after'] || 60;
+    const error = new Error(`Rate limit exceeded. Retry after ${retryAfter}s`);
+    error.response = { status: 429 };
+    throw error;
+  }
+
+  // Handle other 4xx errors
+  if (res.status >= 400) {
+    const error = new Error(`OpenRouter error: ${res.status} ${res.statusText}`);
+    error.response = { status: res.status };
+    throw error;
+  }
 
   const raw = res.data?.choices?.[0]?.message?.content || '';
   const parsed = extractJson(raw, `${AGENT}:${persona.name}`);

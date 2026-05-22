@@ -157,7 +157,7 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
     duration_sec: plan.end_sec - plan.start_sec,
   }));
 
-  // PHASE 2: Advanced processing per clip
+  // PHASE 2: Advanced processing per clip (SEQUENTIAL to avoid rate limits)
   const enrichedClips = [];
   
   for (const clip of clipsWithId) {
@@ -185,6 +185,15 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
           agent: AGENT, 
           error_message: err.message 
         });
+        // Use fallback - keep original score
+        enrichedClip.moment_scoring = {
+          final_score: clip.score,
+          confidence: 0,
+          persona_scores: [],
+          strengths: [],
+          weaknesses: ['Scoring unavailable'],
+          reasoning: 'Scoring service unavailable',
+        };
       }
     }
 
@@ -194,13 +203,17 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
         const criticResult = await criticizeClipMoment(clip, transcript, sourceIngest);
         enrichedClip.risk_assessment = criticResult;
         
-        // Update risk_notes
-        if (criticResult.concerns.length > 0) {
-          enrichedClip.risk_notes = [
+        // Update risk_notes - ensure it's a string, not null
+        if (criticResult.concerns && criticResult.concerns.length > 0) {
+          const riskParts = [
             enrichedClip.risk_notes || '',
             `Risk: ${criticResult.risk_level}`,
             ...criticResult.concerns
-          ].filter(Boolean).join('; ');
+          ].filter(Boolean);
+          enrichedClip.risk_notes = riskParts.join('; ');
+        } else if (!enrichedClip.risk_notes) {
+          // Ensure risk_notes is never null
+          enrichedClip.risk_notes = '';
         }
 
         // Penalize score jika high risk
@@ -220,6 +233,15 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
           agent: AGENT, 
           error_message: err.message 
         });
+        // Ensure risk_notes is set
+        if (!enrichedClip.risk_notes) {
+          enrichedClip.risk_notes = '';
+        }
+      }
+    } else {
+      // If critic disabled, ensure risk_notes is set
+      if (!enrichedClip.risk_notes) {
+        enrichedClip.risk_notes = '';
       }
     }
 
@@ -231,13 +253,20 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
         logger.info(`Caption generation complete`, { 
           agent: AGENT, 
           clipId: clip.clip_id,
-          wordCount: captionResult.word_captions.length 
+          wordCount: captionResult.word_captions?.length || 0 
         });
       } catch (err) {
         logger.warn(`Caption generation failed for clip ${clip.clip_id}`, { 
           agent: AGENT, 
           error_message: err.message 
         });
+        // Use fallback
+        enrichedClip.captions = {
+          caption_style: { font_size: 'medium', color: 'white', animation: 'none', position: 'bottom' },
+          emphasis_words: [],
+          word_captions: [],
+          srt_format: '',
+        };
       }
     }
 
@@ -257,8 +286,13 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
           agent: AGENT, 
           error_message: err.message 
         });
+        // Keep default reframe_strategy from clip
       }
     }
+
+    // NORMALIZE CLIP BEFORE ADDING TO OUTPUT
+    // Ensure all required fields have valid values (never null for strings)
+    enrichedClip = _normalizeClip(enrichedClip);
 
     enrichedClips.push(enrichedClip);
   }
@@ -568,6 +602,35 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
   }
 
   return output;
+}
+
+// ─── Normalize clip output ───────────────────────────────────────────────────
+
+function _normalizeClip(clip) {
+  // Ensure all required fields have valid values (never null for required strings)
+  return {
+    ...clip,
+    // Required string fields - never null
+    hook_type: clip.hook_type || 'unknown',
+    caption_plan: clip.caption_plan || '',
+    reframe_strategy: clip.reframe_strategy || 'center',
+    risk_notes: clip.risk_notes || '', // CRITICAL: Never null
+    
+    // Required numeric fields
+    start_sec: typeof clip.start_sec === 'number' ? clip.start_sec : 0,
+    end_sec: typeof clip.end_sec === 'number' ? clip.end_sec : 0,
+    duration_sec: typeof clip.duration_sec === 'number' ? clip.duration_sec : 0,
+    score: typeof clip.score === 'number' ? Math.max(0, Math.min(100, clip.score)) : 50,
+    
+    // Optional fields - can be null/undefined
+    reason: clip.reason || '',
+    
+    // Nested objects - ensure they exist if referenced
+    moment_scoring: clip.moment_scoring || undefined,
+    risk_assessment: clip.risk_assessment || undefined,
+    captions: clip.captions || undefined,
+    reframe_details: clip.reframe_details || undefined,
+  };
 }
 
 module.exports = { runClipPlannerAgent };
