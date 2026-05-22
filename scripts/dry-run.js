@@ -17,6 +17,7 @@ const { runTranscriptAgent } = require('../src/agents/transcript');
 const { runSceneDetectAgent } = require('../src/agents/scene_detect');
 const { runClipPlannerAgent } = require('../src/agents/clip_planner');
 const { runClipRenderAgent } = require('../src/agents/clip_render');
+const { runTelegramAgent } = require('../src/bot/telegram');
 const { updateSourceVideo } = require('../src/utils/db');
 const { v4: uuidv4 } = require('uuid');
 
@@ -138,16 +139,31 @@ console.log('✅ Database cleaned\n');
     }
     
     const clipsAfterApproval = db.prepare('SELECT * FROM clips WHERE source_video_id = ?').all(sourceVideo.id);
-    const pendingReviewCount = clipsAfterApproval.filter(c => c.status === 'pending_review').length;
+    const renderedCount = clipsAfterApproval.filter(c => c.status === 'rendered').length;
     console.log(`✅ Clip render completed (after approval)`);
+    console.log(`   - ${renderedCount} clip(s) in rendered status\n`);
+    
+    if (renderedCount !== clips.length) {
+      throw new Error(`Expected all clips to be rendered, got ${renderedCount}/${clips.length}`);
+    }
+    
+    // STEP 8: Telegram review (dry-run skips API call, marks pending_review)
+    console.log('📨 STEP 8: Telegram review send...');
+    for (let i = 0; i < clips.length; i++) {
+      await runTelegramAgent();
+    }
+    
+    const clipsAfterTelegram = db.prepare('SELECT * FROM clips WHERE source_video_id = ?').all(sourceVideo.id);
+    const pendingReviewCount = clipsAfterTelegram.filter(c => c.status === 'pending_review').length;
+    console.log(`✅ Telegram review completed`);
     console.log(`   - ${pendingReviewCount} clip(s) in pending_review status\n`);
     
     if (pendingReviewCount !== clips.length) {
-      throw new Error(`Expected all clips to be pending_review, got ${pendingReviewCount}/${clips.length}`);
+      throw new Error(`Expected all clips to be pending_review after Telegram send, got ${pendingReviewCount}/${clips.length}`);
     }
     
-    // STEP 8: Validate data
-    console.log('🔍 STEP 8: Validate data...');
+    // STEP 9: Validate data
+    console.log('🔍 STEP 9: Validate data...');
     
     // Check source_videos
     const sourceCount = db.prepare('SELECT COUNT(*) as count FROM source_videos').get();
@@ -162,7 +178,7 @@ console.log('✅ Database cleaned\n');
     console.log(`✅ jobs: ${jobCount.count} row(s)`);
     
     // Check idempotency
-    console.log('\n🔒 STEP 9: Test idempotency...');
+    console.log('\n🔒 STEP 10: Test idempotency...');
     await triggerSourceIngest(testUrl);
     const sourceCount2 = db.prepare('SELECT COUNT(*) as count FROM source_videos WHERE source_url = ?').get(testUrl);
     if (sourceCount2.count !== 1) {

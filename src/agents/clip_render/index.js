@@ -81,7 +81,12 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
   if (!clipDb) throw new Error(`Clip ${clipId} tidak ditemukan di database`);
 
   // IDEMPOTENCY: Skip if already rendered or in review/approved
-  if (clipDb.status === 'pending_review' || clipDb.status === 'approved' || clipDb.status === 'uploaded') {
+  if (
+    clipDb.status === 'rendered' ||
+    clipDb.status === 'pending_review' ||
+    clipDb.status === 'approved' ||
+    clipDb.status === 'uploaded'
+  ) {
     logger.info('Clip sudah dirender, skip', { 
       agent: AGENT, 
       clipId, 
@@ -215,11 +220,11 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
   const { success, data, error } = validate(ClipRenderOutput, output, AGENT);
   if (!success) throw new Error(`Validasi ClipRenderOutput gagal: ${error}`);
 
-  // Update clip in database
+  // Update clip in database — status "rendered" so TelegramAgent can pick it up
   updateClip(clipId, {
     final_video_path: data.final_video_path,
     thumbnail_path: data.thumbnail_path,
-    status: 'pending_review',
+    status: 'rendered',
   });
 
   return data;
@@ -291,7 +296,7 @@ function _mockClipRender(clipId, sourceVideoId, correlationId, clipDir) {
   updateClip(clipId, {
     final_video_path: finalPath,
     thumbnail_path: thumbPath,
-    status: 'pending_review',
+    status: 'rendered',
   });
 
   return output;

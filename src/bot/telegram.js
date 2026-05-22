@@ -91,7 +91,8 @@ async function _sendClipForReview(clipId, sourceVideoId, correlationId) {
 
   if (!clipDb || !sourceVideo) throw new Error('Data clip tidak lengkap untuk review');
 
-  // IDEMPOTENCY: Skip if clip already sent for review or processed
+  // IDEMPOTENCY: Skip if clip already sent for review or processed.
+  // Allow 'rendered' through — that is the expected state after ClipRenderAgent.
   if (
     clipDb.status === 'pending_review' ||
     clipDb.status === 'approved' ||
@@ -102,6 +103,16 @@ async function _sendClipForReview(clipId, sourceVideoId, correlationId) {
       agent: AGENT,
       clipId,
       status: clipDb.status,
+    });
+    return;
+  }
+
+  // In dry-run mode, skip Telegram API calls but still mark pending_review
+  if (config.dryRun) {
+    updateClip(clipId, { status: 'pending_review' });
+    logger.info('[DRY_RUN] Clip marked pending_review (skipping Telegram send)', {
+      agent: AGENT,
+      clipId,
     });
     return;
   }
@@ -222,6 +233,9 @@ async function _sendClipForReview(clipId, sourceVideoId, correlationId) {
       }
     );
   }
+
+  // Mark pending_review only AFTER review keyboard is successfully delivered
+  updateClip(clipId, { status: 'pending_review' });
 
   logger.info('Clip terkirim ke Telegram untuk review', {
     agent: AGENT,
