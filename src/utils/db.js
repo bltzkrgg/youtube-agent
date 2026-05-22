@@ -469,7 +469,7 @@ function countRows(table) {
 
 function clearJobs() {
   const db = getDb();
-  const result = db.prepare('DELETE FROM jobs WHERE status IN (?, ?, ?)').run('pending', 'processing', 'failed');
+  const result = db.prepare('DELETE FROM jobs').run();
   return result.changes;
 }
 
@@ -487,22 +487,16 @@ function clearMemory() {
 
 function clearAllTestState() {
   const db = getDb();
+
   const counts = {
-    jobs: countRows('jobs'),
-    dead_letter: countRows('dead_letter'),
-    source_videos: countRows('source_videos'),
-    clips: countRows('clips'),
-    analytics: countRows('analytics'),
-    memory: countRows('memory'),
+    jobs:          db.prepare('DELETE FROM jobs').run().changes,
+    dead_letter:   db.prepare('DELETE FROM dead_letter').run().changes,
+    analytics:     db.prepare('DELETE FROM analytics').run().changes,
+    memory:        db.prepare('DELETE FROM memory').run().changes,
+    clips:         db.prepare('DELETE FROM clips').run().changes,
+    source_videos: db.prepare('DELETE FROM source_videos').run().changes,
   };
-  
-  db.prepare('DELETE FROM jobs').run();
-  db.prepare('DELETE FROM dead_letter').run();
-  db.prepare('DELETE FROM analytics').run();
-  db.prepare('DELETE FROM memory').run();
-  db.prepare('DELETE FROM clips').run();
-  db.prepare('DELETE FROM source_videos').run();
-  
+
   return counts;
 }
 

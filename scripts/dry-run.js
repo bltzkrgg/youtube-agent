@@ -282,6 +282,123 @@ console.log('✅ Database cleaned\n');
       console.log('   - No downstream artifacts written for corrupt source');
     }
 
+    // STEP 12: Test admin cleanup helpers
+    console.log('\n🧹 STEP 12: Test admin cleanup helpers...');
+    {
+      const {
+        clearJobs, clearDeadLetters, clearMemory, clearAllTestState,
+        findOrphanJobs, deleteJobsByIds, insertSourceVideo, insertClip,
+        countRows, getDb: getDb3,
+      } = require('../src/utils/db');
+      const { pushJob: pj2, ackJob: ack2 } = require('../src/utils/queue');
+      const db3 = getDb3();
+
+      // --- 12a: clearJobs clears ALL statuses including 'done' ---
+      // Seed jobs with various statuses
+      const now = new Date().toISOString();
+      const jobStatuses = ['pending', 'processing', 'failed', 'done'];
+      const seededJobIds = [];
+      for (const status of jobStatuses) {
+        const jid = require('uuid').v4();
+        seededJobIds.push(jid);
+        db3.prepare(`INSERT INTO jobs (id, correlation_id, type, status, priority, retry_count, max_retry, payload, version, created_at, updated_at)
+          VALUES (?, 'test-corr', 'test_job', ?, 5, 0, 3, '{}', '1.0', ?, ?)`)
+          .run(jid, status, now, now);
+      }
+      const beforeClearJobs = countRows('jobs');
+      const clearedJobs = clearJobs();
+      const afterClearJobs = countRows('jobs');
+      if (afterClearJobs !== 0) throw new Error(`clearJobs: expected 0 jobs remaining, got ${afterClearJobs}`);
+      if (clearedJobs < jobStatuses.length) throw new Error(`clearJobs: expected at least ${jobStatuses.length} deleted, got ${clearedJobs}`);
+      console.log(`✅ clearJobs: cleared all ${clearedJobs} jobs (had ${beforeClearJobs}, including done)`);
+
+      // --- 12b: clearDeadLetters ---
+      const dlId = require('uuid').v4();
+      db3.prepare(`INSERT INTO dead_letter (id, original_job_id, correlation_id, type, payload, error, failed_at)
+        VALUES (?, 'orig-id', 'test-corr', 'test_job', '{}', 'test error', ?)`)
+        .run(dlId, now);
+      const clearedDL = clearDeadLetters();
+      if (countRows('dead_letter') !== 0) throw new Error('clearDeadLetters: dead_letter not empty after clear');
+      console.log(`✅ clearDeadLetters: cleared ${clearedDL} dead letter(s)`);
+
+      // --- 12c: clearMemory ---
+      const memId = require('uuid').v4();
+      db3.prepare(`INSERT INTO memory (id, pattern_type, pattern_value, weight, views_avg, engagement, clip_count, last_updated, created_at)
+        VALUES (?, 'hook_type', 'humor', 1.0, 0, 0, 1, ?, ?)`)
+        .run(memId, now, now);
+      const clearedMem = clearMemory();
+      if (countRows('memory') !== 0) throw new Error('clearMemory: memory not empty after clear');
+      console.log(`✅ clearMemory: cleared ${clearedMem} memory pattern(s)`);
+
+      // --- 12d: clearAllTestState returns accurate counts ---
+      const sv2Id = require('uuid').v4();
+      insertSourceVideo({
+        id: sv2Id,
+        correlation_id: 'admin-test-corr',
+        source_url: 'https://youtube.com/watch?v=admin_test',
+        source_video_path: null,
+        source_duration: 60,
+        channel_title: 'Admin Test Ch',
+        video_title: 'Admin Test Video',
+        description: '',
+        permission_status: 'unknown',
+        allowed_to_clip: 0,
+        risk_level: 'manual_review',
+        risk_notes: 'admin test',
+        status: 'processing',
+        created_at: now,
+        updated_at: now,
+      });
+      // Seed one of each
+      const jid2 = require('uuid').v4();
+      db3.prepare(`INSERT INTO jobs (id, correlation_id, type, status, priority, retry_count, max_retry, payload, version, created_at, updated_at)
+        VALUES (?, 'admin-test-corr', 'source_ingest', 'done', 5, 0, 3, '{}', '1.0', ?, ?)`)
+        .run(jid2, now, now);
+      db3.prepare(`INSERT INTO dead_letter (id, original_job_id, correlation_id, type, payload, error, failed_at)
+        VALUES (?, 'orig-2', 'admin-test-corr', 'source_ingest', '{}', 'err', ?)`)
+        .run(require('uuid').v4(), now);
+      db3.prepare(`INSERT INTO memory (id, pattern_type, pattern_value, weight, views_avg, engagement, clip_count, last_updated, created_at)
+        VALUES (?, 'hook_type', 'shock', 0.8, 0, 0, 1, ?, ?)`)
+        .run(require('uuid').v4(), now, now);
+
+      const resetCounts = clearAllTestState();
+      const tablesAfter = {
+        jobs:          countRows('jobs'),
+        dead_letter:   countRows('dead_letter'),
+        analytics:     countRows('analytics'),
+        memory:        countRows('memory'),
+        clips:         countRows('clips'),
+        source_videos: countRows('source_videos'),
+      };
+      for (const [table, count] of Object.entries(tablesAfter)) {
+        if (count !== 0) throw new Error(`clearAllTestState: ${table} not empty after reset (${count} rows remain)`);
+      }
+      // Verify returned counts matched what was actually deleted
+      if (resetCounts.jobs < 1) throw new Error(`clearAllTestState: expected jobs count >= 1, got ${resetCounts.jobs}`);
+      if (resetCounts.dead_letter < 1) throw new Error(`clearAllTestState: expected dead_letter count >= 1, got ${resetCounts.dead_letter}`);
+      if (resetCounts.memory < 1) throw new Error(`clearAllTestState: expected memory count >= 1, got ${resetCounts.memory}`);
+      if (resetCounts.source_videos < 1) throw new Error(`clearAllTestState: expected source_videos count >= 1, got ${resetCounts.source_videos}`);
+      console.log(`✅ clearAllTestState: all tables empty — deleted: jobs=${resetCounts.jobs}, dead_letter=${resetCounts.dead_letter}, analytics=${resetCounts.analytics}, memory=${resetCounts.memory}, clips=${resetCounts.clips}, source_videos=${resetCounts.source_videos}`);
+
+      // --- 12e: findOrphanJobs detects jobs with missing source_video ---
+      // Insert a job pointing to a non-existent source_video_id
+      const orphanJobId = require('uuid').v4();
+      db3.prepare(`INSERT INTO jobs (id, correlation_id, type, status, priority, retry_count, max_retry, payload, version, created_at, updated_at)
+        VALUES (?, 'orphan-corr', 'transcript', 'pending', 5, 0, 3, ?, '1.0', ?, ?)`)
+        .run(orphanJobId, JSON.stringify({ source_video_id: 'nonexistent-id-xyz' }), now, now);
+
+      const orphans = findOrphanJobs();
+      const ourOrphan = orphans.find(o => o.job.id === orphanJobId);
+      if (!ourOrphan) throw new Error('findOrphanJobs: did not detect job with missing source_video');
+      if (ourOrphan.reason !== 'source_video_not_found') throw new Error(`findOrphanJobs: wrong reason ${ourOrphan.reason}`);
+
+      const deletedOrphans = deleteJobsByIds(orphans.map(o => o.job.id));
+      if (countRows('jobs') !== 0) throw new Error(`findOrphanJobs+deleteJobsByIds: ${countRows('jobs')} jobs remain after orphan delete`);
+      console.log(`✅ findOrphanJobs: detected ${orphans.length} orphan(s), deleted ${deletedOrphans}`);
+
+      console.log('✅ Admin cleanup helpers: ALL PASSED');
+    }
+
     console.log('\n' + '='.repeat(60));
     console.log('✅ DRY-RUN E2E TEST PASSED');
     console.log('='.repeat(60));
@@ -291,6 +408,7 @@ console.log('✅ Database cleaned\n');
     console.log(`  - Permission gate: WORKING`);
     console.log(`  - Idempotency: WORKING`);
     console.log(`  - Invalid source.mp4: WORKING`);
+    console.log(`  - Admin cleanup helpers: WORKING`);
     console.log(`  - Pipeline flow: COMPLETE\n`);
     
     process.exit(0);
