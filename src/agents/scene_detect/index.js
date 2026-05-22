@@ -2,6 +2,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
 const config = require('../../config');
 const logger = require('../../utils/logger');
@@ -44,7 +45,12 @@ async function runSceneDetectAgent() {
       error_message: err.message, stack: err.stack,
       timestamp: new Date().toISOString(),
     });
-    nackJob(job, err.message);
+    // Permanent errors (e.g. invalid source.mp4) should not retry
+    if (err.permanent) {
+      ackJob(job.id);
+    } else {
+      nackJob(job, err.message);
+    }
   }
 }
 
@@ -57,6 +63,9 @@ async function _processSceneDetect(sourceVideoId, correlationId) {
   const videoPath = sourceIngest.source_video_path;
 
   if (config.dryRun) return _mockSceneDetect(sourceVideoId, correlationId);
+
+  // Validate source.mp4 before running SceneDetect — avoid infinite retry on corrupt file
+  await _validateSourceVideo(sourceVideoId, videoPath);
 
   logger.info('Mendeteksi scene boundaries', { agent: AGENT, videoPath });
 
@@ -78,6 +87,96 @@ async function _processSceneDetect(sourceVideoId, correlationId) {
 
   writeVideoJson(sourceVideoId, 'scene_detect.json', data);
   return data;
+}
+
+// ─── Validate source.mp4 before processing ───────────────────────────────────
+
+async function _validateSourceVideo(sourceVideoId, videoPath) {
+  // 1. File must exist
+  if (!videoPath || !fs.existsSync(videoPath)) {
+    const err = new Error(`source.mp4 tidak ditemukan: ${videoPath}`);
+    err.permanent = true;
+    _markSourceFailed(sourceVideoId, `source.mp4 missing: ${videoPath}`);
+    throw err;
+  }
+
+  // 2. File size must be > 100KB
+  const stats = fs.statSync(videoPath);
+  const sizeKB = Math.round(stats.size / 1024);
+
+  if (stats.size < 100 * 1024) {
+    const err = new Error(`source.mp4 terlalu kecil: ${sizeKB}KB (minimum 100KB)`);
+    err.permanent = true;
+    logger.error('source.mp4 terlalu kecil', {
+      agent: AGENT, sourceVideoId, videoPath, sizeKB,
+    });
+    _markSourceFailed(sourceVideoId, `source.mp4 too small: ${sizeKB}KB`);
+    throw err;
+  }
+
+  // 3. ffprobe must be able to read duration > 0
+  const probe = await _ffprobeVideo(videoPath);
+  if (!probe.success || probe.duration <= 0) {
+    const err = new Error(`source.mp4 invalid/corrupt: ${probe.error || `duration=${probe.duration}`}`);
+    err.permanent = true;
+    logger.error('source.mp4 gagal validasi ffprobe', {
+      agent: AGENT, sourceVideoId, videoPath,
+      sizeKB, ffprobeError: probe.error, duration: probe.duration,
+    });
+    _markSourceFailed(sourceVideoId, `source.mp4 corrupt (ffprobe): ${probe.error || `duration=${probe.duration}`}`);
+    throw err;
+  }
+
+  logger.info('source.mp4 valid', {
+    agent: AGENT, sourceVideoId, videoPath,
+    sizeKB, duration: probe.duration,
+  });
+}
+
+function _markSourceFailed(sourceVideoId, reason) {
+  try {
+    const { updateSourceVideo } = require('../../utils/db');
+    updateSourceVideo(sourceVideoId, {
+      status: 'failed',
+      risk_notes: reason,
+    });
+    logger.warn('Source video ditandai failed', { agent: AGENT, sourceVideoId, reason });
+  } catch (e) {
+    logger.error('Gagal update source status to failed', { agent: AGENT, sourceVideoId, error: e.message });
+  }
+}
+
+function _ffprobeVideo(videoPath) {
+  return new Promise((resolve) => {
+    const proc = spawn('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration,format_name',
+      '-of', 'json',
+      videoPath,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        return resolve({ success: false, duration: 0, error: stderr.slice(-300) || 'ffprobe failed' });
+      }
+      try {
+        const data = JSON.parse(stdout);
+        const duration = parseFloat(data.format?.duration || 0);
+        resolve({ success: true, duration, format: data.format?.format_name || 'unknown' });
+      } catch (e) {
+        resolve({ success: false, duration: 0, error: `parse ffprobe output: ${e.message}` });
+      }
+    });
+
+    proc.on('error', (err) => {
+      resolve({ success: false, duration: 0, error: `spawn ffprobe: ${err.message}` });
+    });
+  });
 }
 
 // ─── Run SceneDetect Python script ───────────────────────────────────────────

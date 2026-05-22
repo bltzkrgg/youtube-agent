@@ -592,6 +592,7 @@ function findOrphanJobs() {
   const fs = require('fs');
   const path = require('path');
   const { safeParseJson } = require('./safeJson');
+  const { spawnSync } = require('child_process');
   
   const allJobs = db.prepare('SELECT * FROM jobs').all();
   const orphans = [];
@@ -632,6 +633,40 @@ function findOrphanJobs() {
       if (!fs.existsSync(sourceIngestPath)) {
         orphans.push({ job, reason: 'source_ingest_json_missing' });
         continue;
+      }
+
+      // For transcript/scene_detect: also check if source.mp4 is valid via ffprobe
+      if (['transcript', 'scene_detect'].includes(job.type)) {
+        const videoPath = path.join(config.paths.output, sourceVideoId, 'source.mp4');
+        if (fs.existsSync(videoPath)) {
+          const stats = fs.statSync(videoPath);
+          // Check size
+          if (stats.size < 100 * 1024) {
+            orphans.push({ job, reason: 'source_mp4_too_small' });
+            continue;
+          }
+          // Check with ffprobe (synchronous to keep findOrphanJobs sync)
+          try {
+            const result = spawnSync('ffprobe', [
+              '-v', 'error',
+              '-show_entries', 'format=duration',
+              '-of', 'json',
+              videoPath,
+            ], { timeout: 10000 });
+            if (result.status !== 0) {
+              orphans.push({ job, reason: 'source_mp4_corrupt_ffprobe' });
+              continue;
+            }
+            const probeData = JSON.parse(result.stdout.toString());
+            const duration = parseFloat(probeData.format?.duration || 0);
+            if (duration <= 0) {
+              orphans.push({ job, reason: 'source_mp4_zero_duration' });
+              continue;
+            }
+          } catch (e) {
+            // ffprobe not available or parse error — skip this check
+          }
+        }
       }
     }
     
