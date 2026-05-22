@@ -289,7 +289,11 @@ async function _handleCallback(query) {
   const parts = String(data || '').split(separator);
   const action = parts[0];
 
-  if (!action || !parts[1]) return;
+  if (!action) return;
+
+  // Actions that require at least one argument (parts[1]) — guard only those
+  const REQUIRES_ARG = new Set(['clip_approve', 'clip_reject', 'clip_reject_reason', 'view_all_clips']);
+  if (REQUIRES_ARG.has(action) && !parts[1]) return;
 
   switch (action) {
     case 'clip_approve':
@@ -309,11 +313,48 @@ async function _handleCallback(query) {
       break;
 
     case 'trigger_clipper':
+    case 'menu_trigger':
       await _handleTriggerClipper(chatId);
       break;
 
     case 'check_queue':
-      await _sendQueueStats(chatId);
+    case 'menu_queue':
+      await _sendDetailedQueueStats(chatId);
+      await _sendMainMenu(chatId);
+      break;
+
+    case 'menu_status':
+      await _sendDetailedStatus(chatId);
+      await _sendMainMenu(chatId);
+      break;
+
+    case 'menu_clear_orphans':
+      await _handleClearOrphans(chatId);
+      await _sendMainMenu(chatId);
+      break;
+
+    case 'menu_clear_queue':
+      await _handleClearQueue(chatId);
+      await _sendMainMenu(chatId);
+      break;
+
+    case 'menu_clear_dead':
+      await _handleClearDead(chatId);
+      await _sendMainMenu(chatId);
+      break;
+
+    case 'menu_clear_memory':
+      await _handleClearMemory(chatId);
+      await _sendMainMenu(chatId);
+      break;
+
+    case 'menu_reset_test':
+      // Intentionally does NOT run reset — triggers the confirmation flow
+      await _handleResetTest(chatId);
+      break;
+
+    case 'menu_help':
+      await _sendHelp(chatId);
       break;
 
     default:
@@ -1111,6 +1152,44 @@ async function _handleResetTestConfirm(chatId) {
   }
 }
 
+// ─── Main menu keyboard ───────────────────────────────────────────────────────
+
+function _buildMainMenuKeyboard() {
+  return {
+    inline_keyboard: [
+      // Main commands row
+      [
+        { text: '🎬 Trigger Clipper', callback_data: 'menu_trigger' },
+        { text: '📊 Status',          callback_data: 'menu_status' },
+        { text: '📋 Queue',           callback_data: 'menu_queue' },
+      ],
+      // Admin commands row 1
+      [
+        { text: '🧹 Clear Orphans', callback_data: 'menu_clear_orphans' },
+        { text: '🗑 Clear Queue',   callback_data: 'menu_clear_queue' },
+      ],
+      // Admin commands row 2
+      [
+        { text: '☠️ Clear Dead',  callback_data: 'menu_clear_dead' },
+        { text: '🧠 Clear Memory', callback_data: 'menu_clear_memory' },
+      ],
+      // Destructive / support row
+      [
+        { text: '♻️ Reset Test', callback_data: 'menu_reset_test' },
+        { text: '❓ Help',        callback_data: 'menu_help' },
+      ],
+    ],
+  };
+}
+
+async function _sendMainMenu(chatId) {
+  await _sendMessage(
+    chatId,
+    '📌 *Menu Utama* \\— pilih aksi:',
+    { parse_mode: 'MarkdownV2', reply_markup: _buildMainMenuKeyboard() }
+  );
+}
+
 // ─── Info messages ────────────────────────────────────────────────────────────
 
 async function _sendHelp(chatId) {
@@ -1126,19 +1205,13 @@ async function _sendHelp(chatId) {
     `${_code('/clear_memory')} \\- Clear memory patterns\n` +
     `${_code('/clear_orphans')} \\- Remove orphan jobs\n` +
     `${_code('/reset_test')} \\- Reset all test state \\(destructive\\)\n\n` +
-    `${_code('/help')} \\- Show this message`;
+    `${_code('/help')} \\- Show this message\n\n` +
+    `Atau gunakan tombol di bawah:`;
 
-  const opts = {
+  await _sendMessage(chatId, msg, {
     parse_mode: 'MarkdownV2',
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '🎬 Trigger Clipper', callback_data: 'trigger_clipper' }],
-        [{ text: '📋 Cek Queue', callback_data: 'check_queue' }],
-      ],
-    },
-  };
-
-  await _sendMessage(chatId, msg, opts);
+    reply_markup: _buildMainMenuKeyboard(),
+  });
 }
 
 async function _sendDetailedStatus(chatId) {
