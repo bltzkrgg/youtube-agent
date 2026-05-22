@@ -581,6 +581,16 @@ function deleteJobsByIds(jobIds) {
   return result.changes;
 }
 
+function getSourcesNeedingApproval(limit = 5) {
+  return getDb().prepare(`
+    SELECT id, video_title, channel_title, status, permission_status, risk_level, risk_notes, created_at
+    FROM source_videos
+    WHERE allowed_to_clip = 0 OR permission_status != 'approved'
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(limit);
+}
+
 function findOrphanJobs() {
   const db = getDb();
   const fs = require('fs');
@@ -710,7 +720,7 @@ module.exports = {
   insertAnalytics, getAnalyticsByClip,
   // Admin Operations
   countRows, clearJobs, clearDeadLetters, clearMemory, clearAllTestState,
-  getDetailedJobStats, getDeadLetterSummary, deleteJobsByIds, findOrphanJobs,
+  getDetailedJobStats, getDeadLetterSummary, deleteJobsByIds, findOrphanJobs, getSourcesNeedingApproval,
   // Lifecycle
   closeDb,
 };

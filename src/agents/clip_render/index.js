@@ -128,21 +128,13 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
       risk_notes: `Permission gate: ${sourceVideo.risk_notes || 'Source not allowed to clip'}`,
     });
 
-    // Send notification to Telegram if available (skip in DRY_RUN)
+    // Send rich permission notice to Telegram (skip in DRY_RUN)
     if (!config.dryRun) {
       try {
-        const { notify } = require('../../bot/telegram');
-        await notify(
-          `⚠️ Clip ${clipId} memerlukan manual review\n\n` +
-          `Source: ${sourceVideo.video_title}\n` +
-          `Channel: ${sourceVideo.channel_title}\n` +
-          `Permission: ${sourceVideo.permission_status}\n` +
-          `Risk: ${sourceVideo.risk_level}\n\n` +
-          `${sourceVideo.risk_notes}\n\n` +
-          `Gunakan /approve_source ${sourceVideoId} untuk mengizinkan.`
-        );
+        const { notifyPermissionBlocked } = require('../../bot/telegram');
+        await notifyPermissionBlocked(sourceVideoId, sourceVideo);
       } catch (notifyErr) {
-        logger.warn('Gagal kirim notifikasi Telegram', { agent: AGENT, error: notifyErr.message });
+        logger.warn('Gagal kirim notifikasi permission Telegram', { agent: AGENT, error: notifyErr.message });
       }
     }
 

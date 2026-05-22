@@ -292,7 +292,7 @@ async function _handleCallback(query) {
   if (!action) return;
 
   // Actions that require at least one argument (parts[1]) — guard only those
-  const REQUIRES_ARG = new Set(['clip_approve', 'clip_reject', 'clip_reject_reason', 'view_all_clips']);
+  const REQUIRES_ARG = new Set(['clip_approve', 'clip_reject', 'clip_reject_reason', 'view_all_clips', 'approve_source']);
   if (REQUIRES_ARG.has(action) && !parts[1]) return;
 
   switch (action) {
@@ -312,6 +312,10 @@ async function _handleCallback(query) {
       await _handleViewAllClips(chatId, parts[1]);
       break;
 
+    case 'approve_source':
+      await _handleApproveSource(chatId, parts[1]);
+      break;
+
     case 'trigger_clipper':
     case 'menu_trigger':
       await _handleTriggerClipper(chatId);
@@ -326,6 +330,14 @@ async function _handleCallback(query) {
     case 'menu_status':
       await _sendDetailedStatus(chatId);
       await _sendMainMenu(chatId);
+      break;
+
+    case 'menu_sources':
+      await _sendSources(chatId);
+      break;
+
+    case 'menu_pending_sources':
+      await _sendPendingSources(chatId);
       break;
 
     case 'menu_clear_orphans':
@@ -715,6 +727,14 @@ async function _handleCommand(chatId, text, msg) {
           { parse_mode: 'MarkdownV2' }
         );
       }
+      break;
+
+    case '/sources':
+      await _sendSources(chatId);
+      break;
+
+    case '/pending_sources':
+      await _sendPendingSources(chatId);
       break;
 
     case '/clear_queue':
@@ -1152,6 +1172,111 @@ async function _handleResetTestConfirm(chatId) {
   }
 }
 
+// ─── Sources list ────────────────────────────────────────────────────────────
+
+async function _sendSources(chatId) {
+  try {
+    const db = getDb();
+    const sources = db.prepare(`
+      SELECT id, video_title, channel_title, status, permission_status, allowed_to_clip, risk_level
+      FROM source_videos
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all();
+
+    if (sources.length === 0) {
+      await _sendMessage(chatId, '📭 Tidak ada source video\\.', { parse_mode: 'MarkdownV2' });
+      return;
+    }
+
+    let msg = `📺 *Source Videos* \\(${_escape(sources.length)} terbaru\\)\n\n`;
+    for (const sv of sources) {
+      const permEmoji = sv.allowed_to_clip ? '✅' : '⚠️';
+      msg += `${permEmoji} ${_escape(sv.video_title || '-')}\n` +
+        `  📌 ${_escape(sv.channel_title || '-')}\n` +
+        `  🆔 ${_code(sv.id)}\n` +
+        `  Status: ${_escape(sv.status)} \\| Perm: ${_escape(sv.permission_status)} \\| Risk: ${_escape(sv.risk_level)}\n\n`;
+    }
+
+    await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+  } catch (err) {
+    logger.error('Gagal get sources', { agent: AGENT, error_message: err.message });
+    await _sendMessage(chatId, `❌ Error: ${_escape(err.message)}`, { parse_mode: 'MarkdownV2' });
+  }
+}
+
+async function _sendPendingSources(chatId) {
+  try {
+    const { getSourcesNeedingApproval } = require('../utils/db');
+    const sources = getSourcesNeedingApproval(5);
+
+    if (sources.length === 0) {
+      await _sendMessage(chatId, '✅ Tidak ada source yang menunggu approval\\.', { parse_mode: 'MarkdownV2' });
+      return;
+    }
+
+    let msg = `⚠️ *Sources Menunggu Approval* \\(${_escape(sources.length)}\\)\n\n`;
+    const keyboard = [];
+
+    for (const sv of sources) {
+      msg += `📺 *${_escape(sv.video_title || '-')}*\n` +
+        `  📌 Channel: ${_escape(sv.channel_title || '-')}\n` +
+        `  🆔 ID: ${_code(sv.id)}\n` +
+        `  Status: ${_escape(sv.status)} \\| Risk: ${_escape(sv.risk_level)}\n`;
+
+      if (sv.risk_notes) {
+        msg += `  ⚠️ ${_escape(String(sv.risk_notes).slice(0, 80))}\n`;
+      }
+      msg += `  Approve: ${_code('/approve_source ' + sv.id)}\n\n`;
+
+      keyboard.push([{ text: `✅ Approve: ${(sv.video_title || sv.id).slice(0, 30)}`, callback_data: `approve_source|${sv.id}` }]);
+    }
+
+    await _sendMessage(chatId, msg, {
+      parse_mode: 'MarkdownV2',
+      reply_markup: { inline_keyboard: keyboard },
+    });
+  } catch (err) {
+    logger.error('Gagal get pending sources', { agent: AGENT, error_message: err.message });
+    await _sendMessage(chatId, `❌ Error: ${_escape(err.message)}`, { parse_mode: 'MarkdownV2' });
+  }
+}
+
+// ─── Permission blocked notification (called by ClipRenderAgent) ────────────
+
+async function notifyPermissionBlocked(sourceVideoId, sourceVideo) {
+  if (!bot) return;
+
+  const title = _escape(sourceVideo.video_title || '-');
+  const channel = _escape(sourceVideo.channel_title || '-');
+  const riskLevel = _escape(sourceVideo.risk_level || 'unknown');
+  const riskNotes = _escape(String(sourceVideo.risk_notes || 'Source permission not verified').slice(0, 100));
+
+  const msg = `⚠️ *Permission Diperlukan*\n\n` +
+    `Source video memerlukan approval sebelum bisa di\\-clip:\n\n` +
+    `📺 *${title}*\n` +
+    `📌 Channel: ${channel}\n` +
+    `🆔 ID: ${_code(sourceVideoId)}\n` +
+    `⚠️ Risk: ${riskLevel}\n` +
+    `📝 ${riskNotes}\n\n` +
+    `Gunakan tombol di bawah atau ketik:\n` +
+    `${_code('/approve_source ' + sourceVideoId)}`;
+
+  try {
+    await _sendMessage(config.telegram.chatId, msg, {
+      parse_mode: 'MarkdownV2',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ Approve Source', callback_data: `approve_source|${sourceVideoId}` },
+          { text: '📋 Pending Sources', callback_data: 'menu_pending_sources' },
+        ]],
+      },
+    });
+  } catch (err) {
+    logger.warn('notifyPermissionBlocked: gagal kirim pesan', { agent: AGENT, error_message: err.message });
+  }
+}
+
 // ─── Main menu keyboard ───────────────────────────────────────────────────────
 
 function _buildMainMenuKeyboard() {
@@ -1162,6 +1287,11 @@ function _buildMainMenuKeyboard() {
         { text: '🎬 Trigger Clipper', callback_data: 'menu_trigger' },
         { text: '📊 Status',          callback_data: 'menu_status' },
         { text: '📋 Queue',           callback_data: 'menu_queue' },
+      ],
+      // Sources row
+      [
+        { text: '📺 Sources',          callback_data: 'menu_sources' },
+        { text: '⚠️ Pending Approval', callback_data: 'menu_pending_sources' },
       ],
       // Admin commands row 1
       [
@@ -1198,9 +1328,11 @@ async function _sendHelp(chatId) {
     `${_code('/trigger')} \\- Start clipper pipeline\n` +
     `${_code('/status')} \\- Detailed system status\n` +
     `${_code('/queue')} \\- Detailed queue stats\n` +
+    `${_code('/sources')} \\- List recent source videos\n` +
+    `${_code('/pending_sources')} \\- Sources needing approval\n` +
     `${_code('/approve_source <source_video_id>')} \\- Approve source video\n\n` +
     `*Admin Commands:*\n` +
-    `${_code('/clear_queue')} \\- Clear all pending/processing jobs\n` +
+    `${_code('/clear_queue')} \\- Clear all jobs\n` +
     `${_code('/clear_dead')} \\- Clear dead letter queue\n` +
     `${_code('/clear_memory')} \\- Clear memory patterns\n` +
     `${_code('/clear_orphans')} \\- Remove orphan jobs\n` +
@@ -1314,7 +1446,19 @@ async function _sendDetailedStatus(chatId) {
         msg += `• ${_escape(item.type)}: ${_escape(errorShort)}\n`;
       }
     }
-    
+
+    // Sources needing approval
+    const { getSourcesNeedingApproval } = require('../utils/db');
+    const pendingSources = getSourcesNeedingApproval(5);
+    if (pendingSources.length > 0) {
+      msg += `\n\n⚠️ *Sources Menunggu Approval \\(${_escape(pendingSources.length)}\\):*\n`;
+      for (const sv of pendingSources) {
+        msg += `• ${_escape(sv.video_title || '-')} \\| ${_escape(sv.risk_level)}\n`;
+        msg += `  ${_code('/approve_source ' + sv.id)}\n`;
+      }
+      msg += `\nAtau gunakan ${_code('/pending_sources')} untuk tombol approve\\.`;
+    }
+
     await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
   } catch (err) {
     logger.error('Gagal get status', { agent: AGENT, error_message: err.message });
@@ -1535,5 +1679,6 @@ module.exports = {
   initBot,
   runTelegramAgent,
   notify,
+  notifyPermissionBlocked,
   sendStartupMessage,
 };
