@@ -1105,7 +1105,7 @@ async function _sendHelp(chatId) {
     `${_code('/trigger')} \\- Start clipper pipeline\n` +
     `${_code('/status')} \\- Detailed system status\n` +
     `${_code('/queue')} \\- Detailed queue stats\n` +
-    `${_code('/approve_source <id>')} \\- Approve source video\n\n` +
+    `${_code('/approve_source <source_video_id>')} \\- Approve source video\n\n` +
     `*Admin Commands:*\n` +
     `${_code('/clear_queue')} \\- Clear all pending/processing jobs\n` +
     `${_code('/clear_dead')} \\- Clear dead letter queue\n` +
