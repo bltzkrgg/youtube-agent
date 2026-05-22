@@ -139,7 +139,7 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
     plan.hook_type = plan.hook_type || 'unknown';
     plan.caption_plan = plan.caption_plan || 'Default caption';
     plan.reframe_strategy = plan.reframe_strategy || 'center';
-    plan.risk_notes = plan.risk_notes || null;
+    plan.risk_notes = typeof plan.risk_notes === 'string' ? plan.risk_notes : '';
     
     return true;
   });
@@ -300,10 +300,13 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
   // Sort by final score
   enrichedClips.sort((a, b) => b.score - a.score);
 
+  // Final normalization before validation
+  const normalizedClips = enrichedClips.map(_normalizeClipForOutput);
+
   const output = {
     source_video_id: sourceVideoId,
     correlation_id: correlationId,
-    clips: enrichedClips,
+    clips: normalizedClips,
     version: '1.0',
     created_at: new Date().toISOString(),
   };
@@ -349,7 +352,7 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
       hook_type: clip.hook_type,
       caption_plan: clip.caption_plan,
       reframe_strategy: clip.reframe_strategy,
-      risk_notes: clip.risk_notes || null,
+      risk_notes: clip.risk_notes || '',
       title: clipTitle,
       description: clipDescription,
       hashtags: clipHashtags,
@@ -527,7 +530,7 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
       reason: 'Fakta mengejutkan tentang Indonesia yang langsung menarik perhatian di 3 detik pertama',
       caption_plan: 'Burn subtitle dengan emphasis pada angka dan fakta kunci',
       reframe_strategy: 'center',
-      risk_notes: null,
+      risk_notes: '',
     },
     {
       clip_id: uuidv4(),
@@ -551,7 +554,7 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
       reason: 'Momen lucu dengan punchline kuat',
       caption_plan: 'Highlight punchline dengan font besar',
       reframe_strategy: 'face_track',
-      risk_notes: null,
+      risk_notes: '',
     },
   ];
 
@@ -605,6 +608,26 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
 }
 
 // ─── Normalize clip output ───────────────────────────────────────────────────
+
+function _normalizeClipForOutput(clip) {
+  // Final normalization before ClipPlannerOutput validation
+  // Ensures all required fields have valid values and correct types
+  return {
+    ...clip,
+    // Required string fields - never null
+    risk_notes: typeof clip.risk_notes === 'string' ? clip.risk_notes : '',
+    caption_plan: typeof clip.caption_plan === 'string' ? clip.caption_plan : '',
+    hook_type: typeof clip.hook_type === 'string' ? clip.hook_type : 'unknown',
+    reframe_strategy: ['center', 'zoom_in', 'face_track', 'action_follow'].includes(clip.reframe_strategy)
+      ? clip.reframe_strategy
+      : 'center',
+    // Required numeric fields with validation
+    score: Number.isFinite(Number(clip.score)) ? Number(clip.score) : 50,
+    duration_sec: Number.isFinite(Number(clip.duration_sec))
+      ? Number(clip.duration_sec)
+      : Number(clip.end_sec) - Number(clip.start_sec),
+  };
+}
 
 function _normalizeClip(clip) {
   // Ensure all required fields have valid values (never null for required strings)

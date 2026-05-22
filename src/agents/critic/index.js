@@ -50,6 +50,7 @@ async function criticizeClipMoment(clipPlan, transcript, sourceIngest) {
       recommendations: ['Manual review before publish'],
       fact_check_needed: false,
       context_warning: null,
+      risk_notes: 'Assessment unavailable, manual review required',
     };
   }
 }
