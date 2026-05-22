@@ -105,13 +105,29 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
 
   logger.info('Menganalisis transcript dan scene untuk menemukan viral moments', { agent: AGENT });
 
-  const clipPlans = await withRetry(
-    () => rateLimited('openrouter', () => _analyzeWithLLM(sourceIngest, transcript, sceneDetect), 2000),
-    { maxRetry: config.maxRetry, agent: AGENT, step: 'llmAnalysis' }
-  );
+  let clipPlans;
+  try {
+    clipPlans = await withRetry(
+      () => rateLimited('openrouter', () => _analyzeWithLLM(sourceIngest, transcript, sceneDetect), 2000),
+      { maxRetry: config.maxRetry, agent: AGENT, step: 'llmAnalysis' }
+    );
+  } catch (llmErr) {
+    logger.warn('LLM ClipPlanner gagal, mencoba heuristik fallback', {
+      agent: AGENT, error_message: llmErr.message,
+    });
+    if (config.clipPlannerRequireLlm) {
+      throw llmErr;
+    }
+    clipPlans = _heuristicClipPlans(transcript, sceneDetect, sourceIngest);
+    logger.info(`Heuristic fallback: ${clipPlans.length} clip plan(s) generated`, { agent: AGENT });
+  }
 
   if (!clipPlans || clipPlans.length === 0) {
-    throw new Error('LLM tidak menghasilkan clip plan valid');
+    if (config.clipPlannerRequireLlm) {
+      throw new Error('LLM tidak menghasilkan clip plan valid');
+    }
+    logger.warn('LLM returned empty plans, using heuristic fallback', { agent: AGENT });
+    clipPlans = _heuristicClipPlans(transcript, sceneDetect, sourceIngest);
   }
 
   // Validate and sanitize clip plans
@@ -500,7 +516,7 @@ PENTING:
         'HTTP-Referer': 'https://youtube-agent.local',
         'X-Title': 'YouTube Clipper Agent',
       },
-      timeout: 45000,
+      timeout: config.llmTimeouts.clipPlanner,
     }
   );
 
@@ -605,6 +621,95 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
   }
 
   return output;
+}
+
+// ─── Heuristic fallback clip plans (no LLM required) ─────────────────────────
+
+function _heuristicClipPlans(transcript, sceneDetect, sourceIngest) {
+  const TARGET_MIN = 30; // seconds
+  const TARGET_MAX = 55;
+  const MAX_CLIPS   = 3;
+
+  const totalDuration = sourceIngest.source_duration || 0;
+  const plans = [];
+
+  // Strategy 1: use scene boundaries to build clips of 30-55s
+  const scenes = (sceneDetect && Array.isArray(sceneDetect.scenes)) ? sceneDetect.scenes : [];
+
+  if (scenes.length >= 2) {
+    // Walk scenes greedily: accumulate until we hit target duration
+    let startIdx = 0;
+    while (startIdx < scenes.length && plans.length < MAX_CLIPS) {
+      let accumulated = 0;
+      let endIdx = startIdx;
+
+      while (endIdx < scenes.length && accumulated < TARGET_MIN) {
+        accumulated += scenes[endIdx].duration_sec || 0;
+        endIdx++;
+      }
+
+      const startSec = scenes[startIdx].start_sec;
+      const endSec   = scenes[Math.min(endIdx, scenes.length) - 1].end_sec;
+      const duration = endSec - startSec;
+
+      if (duration >= 15 && duration <= TARGET_MAX + 10) {
+        plans.push({
+          start_sec: parseFloat(startSec.toFixed(2)),
+          end_sec:   parseFloat(Math.min(endSec, startSec + TARGET_MAX).toFixed(2)),
+          score:     50,
+          hook_type: 'unknown',
+          reason:    'Heuristic clip from scene boundaries (LLM unavailable)',
+          caption_plan:      '',
+          reframe_strategy:  'center',
+          risk_notes:        '',
+        });
+      }
+
+      // Advance by at least one scene to avoid infinite loop
+      startIdx = Math.max(endIdx, startIdx + 1);
+    }
+  }
+
+  // Strategy 2: if not enough scenes, divide transcript into equal chunks
+  if (plans.length === 0 && totalDuration > 30) {
+    const chunkSize = Math.min(TARGET_MAX, Math.max(TARGET_MIN, Math.floor(totalDuration / 3)));
+    const numChunks = Math.min(MAX_CLIPS, Math.floor(totalDuration / chunkSize));
+
+    for (let i = 0; i < numChunks; i++) {
+      const startSec = i * chunkSize;
+      const endSec   = Math.min(startSec + chunkSize, totalDuration);
+      if (endSec - startSec >= 15) {
+        plans.push({
+          start_sec: parseFloat(startSec.toFixed(2)),
+          end_sec:   parseFloat(endSec.toFixed(2)),
+          score:     50,
+          hook_type: 'unknown',
+          reason:    'Heuristic clip from duration split (LLM unavailable)',
+          caption_plan:      '',
+          reframe_strategy:  'center',
+          risk_notes:        '',
+        });
+      }
+    }
+  }
+
+  // Strategy 3: last resort — one clip from start
+  if (plans.length === 0 && totalDuration >= 15) {
+    const endSec = Math.min(TARGET_MAX, totalDuration);
+    plans.push({
+      start_sec:         0,
+      end_sec:           parseFloat(endSec.toFixed(2)),
+      score:             50,
+      hook_type:         'unknown',
+      reason:            'Heuristic clip (LLM unavailable, last resort)',
+      caption_plan:      '',
+      reframe_strategy:  'center',
+      risk_notes:        '',
+    });
+  }
+
+  logger.info(`Heuristic clip plans: ${plans.length} clip(s)`, { agent: AGENT });
+  return plans;
 }
 
 // ─── Normalize clip output ───────────────────────────────────────────────────

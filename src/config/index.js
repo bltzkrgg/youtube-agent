@@ -75,6 +75,15 @@ const config = {
   // Retry
   maxRetry: parseInt(process.env.MAX_RETRY || '3', 10),
 
+  // LLM timeouts (ms)
+  llmTimeouts: {
+    clipPlanner:    parseInt(process.env.CLIP_PLANNER_TIMEOUT_MS    || '90000', 10),
+    optionalAgent:  parseInt(process.env.OPTIONAL_AGENT_TIMEOUT_MS  || '15000', 10),
+  },
+
+  // ClipPlanner resilience
+  clipPlannerRequireLlm: process.env.CLIP_PLANNER_REQUIRE_LLM === 'true',
+
   // Timeouts (ms)
   timeouts: {
     research: parseInt(process.env.TIMEOUT_RESEARCH || '300000',  10),

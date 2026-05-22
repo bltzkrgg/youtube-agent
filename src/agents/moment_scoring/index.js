@@ -57,10 +57,16 @@ async function scoreClipMoment(clipPlan, transcript, sceneDetect, sourceIngest) 
 
   for (const persona of SCORING_PERSONAS) {
     try {
-      const score = await withRetry(
+      const timeoutMs = config.llmTimeouts.optionalAgent;
+      const scorePromise = withRetry(
         () => rateLimited('openrouter', () => _scoreWithPersona(persona, clipPlan, transcript, sceneDetect, sourceIngest), 2000),
         { maxRetry: 2, agent: AGENT, step: `score_${persona.name}` }
       );
+      // Race against a per-persona timeout so a slow persona can't block the pipeline
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Persona ${persona.name} timeout after ${timeoutMs}ms`)), timeoutMs)
+      );
+      const score = await Promise.race([scorePromise, timeoutPromise]);
       scores.push({ persona: persona.name, ...score });
     } catch (err) {
       const is429 = err.response?.status === 429 || err.message?.includes('429');
@@ -179,7 +185,7 @@ Hanya JSON, tanpa teks lain.`;
         'HTTP-Referer': 'https://youtube-agent.local',
         'X-Title': 'YouTube Clipper Agent',
       },
-      timeout: 30000,
+      timeout: config.llmTimeouts.optionalAgent,
       validateStatus: (status) => status < 500, // Don't throw on 4xx
     }
   );

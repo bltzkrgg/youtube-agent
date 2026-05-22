@@ -127,7 +127,7 @@ Hanya JSON, tanpa teks lain.`;
         'HTTP-Referer': 'https://youtube-agent.local',
         'X-Title': 'YouTube Clipper Agent',
       },
-      timeout: 30000,
+      timeout: config.llmTimeouts.optionalAgent,
       validateStatus: (status) => status < 500, // Don't throw on 4xx
     }
   );

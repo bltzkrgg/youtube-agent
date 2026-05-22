@@ -39,13 +39,17 @@ async function determineReframeStrategy(clipPlan, transcript, sourceIngest) {
 
     return strategy;
   } catch (err) {
+    const is429 = err.response?.status === 429 || err.message?.includes('429');
     logger.error('Reframe analysis gagal', { 
       agent: AGENT, 
-      error_message: err.message 
+      error_message: err.message,
+      is429,
     });
-    // Fallback to center
+    // Fallback — never block ClipPlanner
     return {
       strategy: 'center',
+      strategy_applied: 'center',
+      fallback_reason: 'Reframe unavailable',
       reasoning: 'Fallback to center crop due to analysis failure',
       keyframes: [],
     };
@@ -137,9 +141,25 @@ Hanya JSON, tanpa teks lain.`;
         'HTTP-Referer': 'https://youtube-agent.local',
         'X-Title': 'YouTube Clipper Agent',
       },
-      timeout: 30000,
+      timeout: config.llmTimeouts.optionalAgent,
+      validateStatus: (status) => status < 500, // Don't throw on 4xx
     }
   );
+
+  // Handle 429 rate limit
+  if (res.status === 429) {
+    const retryAfter = res.headers['retry-after'] || 60;
+    const error = new Error(`Rate limit exceeded. Retry after ${retryAfter}s`);
+    error.response = { status: 429 };
+    throw error;
+  }
+
+  // Handle other 4xx errors
+  if (res.status >= 400) {
+    const error = new Error(`OpenRouter error: ${res.status} ${res.statusText}`);
+    error.response = { status: res.status };
+    throw error;
+  }
 
   const raw = res.data?.choices?.[0]?.message?.content || '';
   const parsed = extractJson(raw, `${AGENT}:analyzeReframe`);
