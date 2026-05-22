@@ -253,23 +253,60 @@ const CLIP_REJECT_REASONS = {
   hook_lemah: { label: '🎣 Hook Lemah', penaltyType: 'topic', penaltyFactor: 0.4 },
 };
 
+// ─── Short reason map (for compact callback_data) ────────────────────────────
+
+const SHORT_REASON_MAP = {
+  visual:  'visual_buruk',
+  topic:   'topik_garing',
+  timing:  'timing_buruk',
+  hook:    'hook_lemah',
+};
+
+// ─── Assert callback_data safe (Telegram limit: 64 bytes) ────────────────────
+
+function _assertCallbackDataSafe(data) {
+  const bytes = Buffer.byteLength(data, 'utf8');
+  if (bytes > 64) {
+    throw new Error(`callback_data too long: ${bytes} bytes > 64 limit: "${data}"`);
+  }
+  return data;
+}
+
+// ─── Resolve short clip id to full UUID ──────────────────────────────────────
+
+function _resolveClipId(shortOrFullId) {
+  // Full UUID (36 chars) — return directly
+  if (shortOrFullId && shortOrFullId.length === 36 && shortOrFullId.includes('-')) {
+    return shortOrFullId;
+  }
+  // Short prefix — lookup in DB
+  const db = getDb();
+  const matches = db.prepare('SELECT id FROM clips WHERE id LIKE ?').all(`${shortOrFullId}%`);
+  if (matches.length === 0) throw new Error(`Clip tidak ditemukan untuk short id: ${shortOrFullId}`);
+  if (matches.length > 1) throw new Error(`Ambiguous clip short id: ${shortOrFullId} matches ${matches.length} clips`);
+  return matches[0].id;
+}
+
 function _buildClipReviewKeyboard(clipId) {
+  // Use short 8-char prefix to stay well under 64-byte Telegram limit.
+  // crr|<8>|visual = 18 bytes — safe. clip_reject_reason|<36>|visual_buruk = 68 bytes — too long.
+  const s = clipId.slice(0, 8);
   return {
     inline_keyboard: [
       [
-        { text: '✅ APPROVE', callback_data: `clip_approve|${clipId}` },
-        { text: '❌ REJECT', callback_data: `clip_reject|${clipId}` },
+        { text: '✅ APPROVE', callback_data: _assertCallbackDataSafe(`ca|${s}`) },
+        { text: '❌ REJECT',  callback_data: _assertCallbackDataSafe(`cr|${s}`) },
       ],
       [
-        { text: CLIP_REJECT_REASONS.visual_buruk.label, callback_data: `clip_reject_reason|${clipId}|visual_buruk` },
-        { text: CLIP_REJECT_REASONS.topik_garing.label, callback_data: `clip_reject_reason|${clipId}|topik_garing` },
+        { text: CLIP_REJECT_REASONS.visual_buruk.label,  callback_data: _assertCallbackDataSafe(`crr|${s}|visual`) },
+        { text: CLIP_REJECT_REASONS.topik_garing.label,  callback_data: _assertCallbackDataSafe(`crr|${s}|topic`) },
       ],
       [
-        { text: CLIP_REJECT_REASONS.timing_buruk.label, callback_data: `clip_reject_reason|${clipId}|timing_buruk` },
-        { text: CLIP_REJECT_REASONS.hook_lemah.label, callback_data: `clip_reject_reason|${clipId}|hook_lemah` },
+        { text: CLIP_REJECT_REASONS.timing_buruk.label,  callback_data: _assertCallbackDataSafe(`crr|${s}|timing`) },
+        { text: CLIP_REJECT_REASONS.hook_lemah.label,    callback_data: _assertCallbackDataSafe(`crr|${s}|hook`) },
       ],
       [
-        { text: '📊 View All Clips', callback_data: `view_all_clips|${clipId}` },
+        { text: '📊 View All Clips', callback_data: _assertCallbackDataSafe(`vac|${s}`) },
       ],
     ],
   };
@@ -292,10 +329,30 @@ async function _handleCallback(query) {
   if (!action) return;
 
   // Actions that require at least one argument (parts[1]) — guard only those
-  const REQUIRES_ARG = new Set(['clip_approve', 'clip_reject', 'clip_reject_reason', 'view_all_clips', 'approve_source']);
+  const REQUIRES_ARG = new Set(['clip_approve', 'clip_reject', 'clip_reject_reason', 'view_all_clips', 'approve_source', 'ca', 'cr', 'crr', 'vac']);
   if (REQUIRES_ARG.has(action) && !parts[1]) return;
 
   switch (action) {
+    // ── Short forms (new) ──
+    case 'ca':  // compact approve
+      await _handleClipApprove(chatId, _resolveClipId(parts[1]));
+      break;
+
+    case 'cr':  // compact reject
+      await _handleClipRejectStart(chatId, _resolveClipId(parts[1]));
+      break;
+
+    case 'crr': { // compact reject reason
+      const fullReason = SHORT_REASON_MAP[parts[2]] || parts[2];
+      await _handleClipStructuredReject(chatId, _resolveClipId(parts[1]), fullReason);
+      break;
+    }
+
+    case 'vac': // compact view all clips
+      await _handleViewAllClips(chatId, _resolveClipId(parts[1]));
+      break;
+
+    // ── Long forms (backward compat) ──
     case 'clip_approve':
       await _handleClipApprove(chatId, parts[1]);
       break;
@@ -1640,6 +1697,17 @@ async function _sendMessage(chatId, text, options = {}) {
     return await bot.sendMessage(chatId, text, options);
   } catch (err) {
     const message = String(err.message || '');
+
+    // Handle BUTTON_DATA_INVALID — retry without keyboard
+    if (message.includes('BUTTON_DATA_INVALID')) {
+      logger.warn('Telegram BUTTON_DATA_INVALID, retrying without reply_markup', {
+        agent: AGENT,
+        error_message: err.message,
+      });
+      const noKeyboardOptions = { ...options };
+      delete noKeyboardOptions.reply_markup;
+      return bot.sendMessage(chatId, text, noKeyboardOptions);
+    }
 
     if (message.includes("can't parse entities") || message.includes('Bad Request:')) {
       logger.warn('Telegram MarkdownV2 parse gagal, fallback plain text', {

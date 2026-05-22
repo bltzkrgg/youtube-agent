@@ -316,8 +316,17 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
   // Sort by final score
   enrichedClips.sort((a, b) => b.score - a.score);
 
+  // Apply hard cap on clips per source
+  const originalCount = enrichedClips.length;
+  const cappedClips = enrichedClips.slice(0, config.maxClipsPerSource);
+  if (cappedClips.length < originalCount) {
+    logger.info('Clip count limited by MAX_CLIPS_PER_SOURCE', {
+      agent: AGENT, originalCount, limitedCount: cappedClips.length,
+    });
+  }
+
   // Final normalization before validation
-  const normalizedClips = enrichedClips.map(_normalizeClipForOutput);
+  const normalizedClips = cappedClips.map(_normalizeClipForOutput);
 
   const output = {
     source_video_id: sourceVideoId,
@@ -448,7 +457,7 @@ ${sceneList}
 ${memoryContext}
 
 TUGAS:
-Identifikasi 3-7 momen terbaik dari video ini yang bisa dijadikan clip Shorts (max 60 detik per clip).
+Identifikasi hingga ${config.maxClipsPerSource} momen terbaik dari video ini yang bisa dijadikan clip Shorts (max 60 detik per clip).
 
 KRITERIA VIRAL MOMENT:
 1. **Hook kuat** - Momen yang langsung menarik perhatian dalam 3 detik pertama
@@ -498,7 +507,7 @@ PENTING:
 - Duration 15-60 detik (ideal 30-45 detik)
 - Score 0-100 berdasarkan potensi viral
 - Urutkan dari score tertinggi
-- Max 7 clips, fokus pada yang terbaik`;
+- Max ${config.maxClipsPerSource} clips, fokus pada yang terbaik`;
 
   const res = await axios.post(
     `${config.openrouter.baseUrl}/chat/completions`,
