@@ -488,14 +488,31 @@ function clearMemory() {
 function clearAllTestState() {
   const db = getDb();
 
+  // Count rows BEFORE deletion so the report is accurate even if something fails
   const counts = {
-    jobs:          db.prepare('DELETE FROM jobs').run().changes,
-    dead_letter:   db.prepare('DELETE FROM dead_letter').run().changes,
-    analytics:     db.prepare('DELETE FROM analytics').run().changes,
-    memory:        db.prepare('DELETE FROM memory').run().changes,
-    clips:         db.prepare('DELETE FROM clips').run().changes,
-    source_videos: db.prepare('DELETE FROM source_videos').run().changes,
+    jobs:          countRows('jobs'),
+    dead_letter:   countRows('dead_letter'),
+    analytics:     countRows('analytics'),
+    memory:        countRows('memory'),
+    clips:         countRows('clips'),
+    source_videos: countRows('source_videos'),
   };
+
+  // Run all deletes atomically inside a transaction.
+  // Order respects FK dependencies: children first, parents last.
+  //   analytics  → child of clips
+  //   clips      → child of source_videos
+  //   source_videos → parent (deleted last)
+  const clearTx = db.transaction(() => {
+    db.prepare('DELETE FROM jobs').run();
+    db.prepare('DELETE FROM dead_letter').run();
+    db.prepare('DELETE FROM analytics').run();
+    db.prepare('DELETE FROM memory').run();
+    db.prepare('DELETE FROM clips').run();
+    db.prepare('DELETE FROM source_videos').run();
+  });
+
+  clearTx(); // throws on error — caller handles it
 
   return counts;
 }

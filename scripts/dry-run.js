@@ -330,7 +330,7 @@ console.log('✅ Database cleaned\n');
       if (countRows('memory') !== 0) throw new Error('clearMemory: memory not empty after clear');
       console.log(`✅ clearMemory: cleared ${clearedMem} memory pattern(s)`);
 
-      // --- 12d: clearAllTestState returns accurate counts ---
+      // --- 12d: clearAllTestState returns accurate counts and leaves all tables empty ---
       const sv2Id = require('uuid').v4();
       insertSourceVideo({
         id: sv2Id,
@@ -349,7 +349,33 @@ console.log('✅ Database cleaned\n');
         created_at: now,
         updated_at: now,
       });
-      // Seed one of each
+      // Seed a clip linked to the source_video (tests FK-safe delete order)
+      const clipId2 = require('uuid').v4();
+      insertClip({
+        id: clipId2,
+        source_video_id: sv2Id,
+        correlation_id: 'admin-test-corr',
+        start_sec: 0,
+        end_sec: 30,
+        duration_sec: 30,
+        score: 50,
+        hook_type: 'unknown',
+        caption_plan: '',
+        reframe_strategy: 'center',
+        risk_notes: '',
+        title: 'Admin Test Clip',
+        description: '',
+        hashtags: '',
+        source_url: 'https://youtube.com/watch?v=admin_test',
+        source_channel: 'Admin Test Ch',
+        attribution: '',
+        final_video_path: null,
+        thumbnail_path: null,
+        status: 'rendered',
+        created_at: now,
+        updated_at: now,
+      });
+      // Seed one of each — including a done-status job
       const jid2 = require('uuid').v4();
       db3.prepare(`INSERT INTO jobs (id, correlation_id, type, status, priority, retry_count, max_retry, payload, version, created_at, updated_at)
         VALUES (?, 'admin-test-corr', 'source_ingest', 'done', 5, 0, 3, '{}', '1.0', ?, ?)`)
@@ -373,11 +399,12 @@ console.log('✅ Database cleaned\n');
       for (const [table, count] of Object.entries(tablesAfter)) {
         if (count !== 0) throw new Error(`clearAllTestState: ${table} not empty after reset (${count} rows remain)`);
       }
-      // Verify returned counts matched what was actually deleted
-      if (resetCounts.jobs < 1) throw new Error(`clearAllTestState: expected jobs count >= 1, got ${resetCounts.jobs}`);
-      if (resetCounts.dead_letter < 1) throw new Error(`clearAllTestState: expected dead_letter count >= 1, got ${resetCounts.dead_letter}`);
-      if (resetCounts.memory < 1) throw new Error(`clearAllTestState: expected memory count >= 1, got ${resetCounts.memory}`);
-      if (resetCounts.source_videos < 1) throw new Error(`clearAllTestState: expected source_videos count >= 1, got ${resetCounts.source_videos}`);
+      // Verify counts reported match what was seeded
+      if (resetCounts.jobs < 1) throw new Error(`clearAllTestState: expected jobs >= 1, got ${resetCounts.jobs}`);
+      if (resetCounts.dead_letter < 1) throw new Error(`clearAllTestState: expected dead_letter >= 1, got ${resetCounts.dead_letter}`);
+      if (resetCounts.memory < 1) throw new Error(`clearAllTestState: expected memory >= 1, got ${resetCounts.memory}`);
+      if (resetCounts.source_videos < 1) throw new Error(`clearAllTestState: expected source_videos >= 1, got ${resetCounts.source_videos}`);
+      if (resetCounts.clips < 1) throw new Error(`clearAllTestState: expected clips >= 1, got ${resetCounts.clips}`);
       console.log(`✅ clearAllTestState: all tables empty — deleted: jobs=${resetCounts.jobs}, dead_letter=${resetCounts.dead_letter}, analytics=${resetCounts.analytics}, memory=${resetCounts.memory}, clips=${resetCounts.clips}, source_videos=${resetCounts.source_videos}`);
 
       // --- 12e: findOrphanJobs detects jobs with missing source_video ---

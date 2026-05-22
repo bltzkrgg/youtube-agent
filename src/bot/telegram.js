@@ -1094,7 +1094,7 @@ async function _handleResetTestConfirm(chatId) {
   confirmationState.delete(chatId);
   
   try {
-    const { clearAllTestState } = require('../utils/db');
+    const { clearAllTestState, countRows } = require('../utils/db');
     const fs = require('fs');
     const path = require('path');
     
@@ -1104,8 +1104,22 @@ async function _handleResetTestConfirm(chatId) {
       { parse_mode: 'MarkdownV2' }
     );
     
+    // clearAllTestState now runs inside a transaction — throws on failure
     const counts = clearAllTestState();
     
+    // Verify all tables are actually empty after reset
+    const verifyFailed = [];
+    for (const table of ['jobs', 'dead_letter', 'analytics', 'memory', 'clips', 'source_videos']) {
+      const remaining = countRows(table);
+      if (remaining > 0) verifyFailed.push(`${table}: ${remaining} rows masih tersisa`);
+    }
+
+    if (verifyFailed.length > 0) {
+      const errMsg = `Reset selesai tapi beberapa tabel tidak kosong:\\n${verifyFailed.map(s => `• ${_escape(s)}`).join('\\n')}`;
+      logger.error('clearAllTestState: tabel tidak kosong setelah reset', { agent: AGENT, verifyFailed });
+      await _sendMessage(chatId, `⚠️ ${errMsg}`, { parse_mode: 'MarkdownV2' });
+    }
+
     // Clear output and cache folders
     let filesDeleted = 0;
     
@@ -1144,13 +1158,13 @@ async function _handleResetTestConfirm(chatId) {
     fs.mkdirSync(config.paths.cache, { recursive: true });
     
     let msg = `✅ *Test State Reset Complete*\n\n` +
-      `*Database Rows Deleted:*\n` +
+      `*Database Rows Deleted \\(sebelum reset\\):*\n` +
       `• Jobs: ${_escape(counts.jobs)}\n` +
       `• Dead Letter: ${_escape(counts.dead_letter)}\n` +
-      `• Source Videos: ${_escape(counts.source_videos)}\n` +
-      `• Clips: ${_escape(counts.clips)}\n` +
       `• Analytics: ${_escape(counts.analytics)}\n` +
-      `• Memory: ${_escape(counts.memory)}\n\n` +
+      `• Memory: ${_escape(counts.memory)}\n` +
+      `• Clips: ${_escape(counts.clips)}\n` +
+      `• Source Videos: ${_escape(counts.source_videos)}\n\n` +
       `*Files/Folders Deleted:*\n` +
       `• ${_escape(filesDeleted)} folder\\(s\\) dari output/cache\n\n` +
       `System siap untuk test baru\\.`;
@@ -1161,12 +1175,13 @@ async function _handleResetTestConfirm(chatId) {
       agent: AGENT,
       counts,
       filesDeleted,
+      verifyFailed,
     });
   } catch (err) {
     logger.error('Gagal reset test state', { agent: AGENT, error_message: err.message, stack: err.stack });
     await _sendMessage(
       chatId,
-      `❌ Error: ${_escape(err.message)}`,
+      `❌ Reset gagal: ${_escape(err.message)}\n\nState mungkin tidak bersih\\. Cek logs untuk detail\\.`,
       { parse_mode: 'MarkdownV2' }
     );
   }
