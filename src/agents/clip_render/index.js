@@ -164,6 +164,11 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
     width: config.video.width,
     height: config.video.height,
     fps: config.video.fps,
+    // Render quality settings from config/env
+    crf: config.video.crf,
+    preset: config.video.preset,
+    audio_bitrate: config.video.audioBitrate,
+    scale_flags: config.video.scaleFlags,
     output_video: path.join(clipDir, 'final.mp4'),
     output_thumbnail: path.join(clipDir, 'thumbnail.jpg'),
     work_dir: clipDir,

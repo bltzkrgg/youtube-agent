@@ -69,17 +69,26 @@ def process_clip(cfg):
     output_thumbnail = cfg["output_thumbnail"]
     work_dir = cfg.get("work_dir", os.path.dirname(output_video))
 
+    # Render quality settings (passed from Node config / env)
+    crf = int(cfg.get("crf", 20))
+    preset = str(cfg.get("preset", "veryfast"))
+    audio_bitrate = str(cfg.get("audio_bitrate", "192k"))
+    scale_flags = str(cfg.get("scale_flags", "lanczos"))
+
     os.makedirs(work_dir, exist_ok=True)
 
     duration = end_sec - start_sec
 
+    # ffprobe log of source before processing (non-fatal)
+    _log_ffprobe("source", source_video_path)
+
     # Step 1: Extract clip from source video
     extracted_clip = os.path.join(work_dir, "extracted.mp4")
-    _extract_clip(source_video_path, start_sec, duration, extracted_clip)
+    _extract_clip(source_video_path, start_sec, duration, extracted_clip, crf, preset, audio_bitrate)
 
     # Step 2: Reframe to 9:16
     reframed_clip = os.path.join(work_dir, "reframed.mp4")
-    _reframe_clip(extracted_clip, reframed_clip, width, height, fps, reframe_strategy, reframe_details)
+    _reframe_clip(extracted_clip, reframed_clip, width, height, fps, reframe_strategy, reframe_details, crf, preset, scale_flags)
 
     # Step 3: Burn captions
     if captions_data and captions_data.get("srt_format"):
@@ -88,12 +97,12 @@ def process_clip(cfg):
         srt_path = os.path.join(work_dir, "captions.srt")
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write(captions_data["srt_format"])
-        _burn_srt_captions(reframed_clip, captioned_clip, srt_path, captions_data.get("caption_style", {}))
+        _burn_srt_captions(reframed_clip, captioned_clip, srt_path, captions_data.get("caption_style", {}), crf, preset)
         final_clip = captioned_clip
     elif caption_plan and caption_plan.lower() not in ["none", "no caption"]:
         # Fallback to simple caption
         captioned_clip = os.path.join(work_dir, "captioned.mp4")
-        _burn_simple_caption(reframed_clip, captioned_clip, caption_plan, width, height)
+        _burn_simple_caption(reframed_clip, captioned_clip, caption_plan, width, height, crf, preset)
         final_clip = captioned_clip
     else:
         final_clip = reframed_clip
@@ -107,6 +116,9 @@ def process_clip(cfg):
 
     actual_duration = _get_duration(output_video)
 
+    # ffprobe log of final render (non-fatal)
+    _log_ffprobe("final", output_video)
+
     return {
         "final_video_path": output_video,
         "thumbnail_path": output_thumbnail,
@@ -118,15 +130,16 @@ def process_clip(cfg):
 
 # ─── Extract clip from source ────────────────────────────────────────────────
 
-def _extract_clip(source_path, start_sec, duration, output_path):
+def _extract_clip(source_path, start_sec, duration, output_path, crf=20, preset="veryfast", audio_bitrate="192k"):
     """Extract clip from source video using FFmpeg."""
     cmd = [
         "ffmpeg", "-y",
         "-ss", str(start_sec),
         "-i", source_path,
         "-t", str(duration),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", audio_bitrate,
         "-movflags", "+faststart",
         output_path
     ]
@@ -138,7 +151,7 @@ def _extract_clip(source_path, start_sec, duration, output_path):
 
 # ─── Reframe to 9:16 ──────────────────────────────────────────────────────────
 
-def _reframe_clip(input_path, output_path, width, height, fps, strategy, reframe_details=None):
+def _reframe_clip(input_path, output_path, width, height, fps, strategy, reframe_details=None, crf=20, preset="veryfast", scale_flags="lanczos"):
     """
     Reframe video to 9:16 aspect ratio.
     Strategies:
@@ -150,29 +163,30 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy, reframe
     """
     
     if strategy == "center":
-        vf = _center_crop_filter(width, height, fps)
+        vf = _center_crop_filter(width, height, fps, scale_flags)
     elif strategy == "zoom_in":
-        vf = _zoom_in_filter(width, height, fps, reframe_details)
+        vf = _zoom_in_filter(width, height, fps, reframe_details, scale_flags)
     elif strategy == "face_track":
         # TODO: Implement face tracking with OpenCV
         # For now, fallback to center
-        vf = _center_crop_filter(width, height, fps)
+        vf = _center_crop_filter(width, height, fps, scale_flags)
     elif strategy == "action_follow":
         # TODO: Implement motion tracking
         # For now, fallback to center
-        vf = _center_crop_filter(width, height, fps)
+        vf = _center_crop_filter(width, height, fps, scale_flags)
     elif strategy == "split_screen":
         # TODO: Implement split screen
         # For now, fallback to center
-        vf = _center_crop_filter(width, height, fps)
+        vf = _center_crop_filter(width, height, fps, scale_flags)
     else:
-        vf = _center_crop_filter(width, height, fps)
+        vf = _center_crop_filter(width, height, fps, scale_flags)
 
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
         "-vf", vf,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_path
@@ -183,21 +197,21 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy, reframe
         raise RuntimeError(f"FFmpeg reframe gagal: {result.stderr[-400:]}")
 
 
-def _center_crop_filter(width, height, fps):
+def _center_crop_filter(width, height, fps, scale_flags="lanczos"):
     """Scale to cover and center crop to target aspect ratio."""
     return (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
         f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,"
         f"fps={fps}"
     )
 
 
-def _zoom_in_filter(width, height, fps, reframe_details):
+def _zoom_in_filter(width, height, fps, reframe_details, scale_flags="lanczos"):
     """Progressive zoom in for dramatic effect."""
     # Start at 1.0x, end at 1.2x zoom over the clip duration
     zoom_end = 1.2
     return (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
         f"zoompan=z='min(zoom+0.0005,{zoom_end})':d=1:s={width}x{height}:fps={fps},"
         f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2"
     )
@@ -205,7 +219,7 @@ def _zoom_in_filter(width, height, fps, reframe_details):
 
 # ─── Burn SRT captions (advanced) ────────────────────────────────────────────
 
-def _burn_srt_captions(input_path, output_path, srt_path, caption_style):
+def _burn_srt_captions(input_path, output_path, srt_path, caption_style, crf=20, preset="veryfast"):
     """
     Burn SRT subtitles with advanced styling.
     Uses FFmpeg subtitles filter with ASS styling.
@@ -245,7 +259,8 @@ def _burn_srt_captions(input_path, output_path, srt_path, caption_style):
         "ffmpeg", "-y",
         "-i", input_path,
         "-vf", vf,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_path
@@ -259,7 +274,7 @@ def _burn_srt_captions(input_path, output_path, srt_path, caption_style):
 
 # ─── Burn simple caption ──────────────────────────────────────────────────────
 
-def _burn_simple_caption(input_path, output_path, caption_text, width, height):
+def _burn_simple_caption(input_path, output_path, caption_text, width, height, crf=20, preset="veryfast"):
     """
     Burn a simple caption overlay at the bottom of the video.
     For more advanced subtitle timing, use separate subtitle file.
@@ -287,7 +302,8 @@ def _burn_simple_caption(input_path, output_path, caption_text, width, height):
         "ffmpeg", "-y",
         "-i", input_path,
         "-vf", vf,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_path
@@ -365,6 +381,43 @@ def _generate_thumbnail(video_path, thumb_path, width, height):
 
 
 # ─── Utils ────────────────────────────────────────────────────────────────────
+
+def _log_ffprobe(label, path):
+    """Log ffprobe info (width, height, duration, bitrate). Non-fatal."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-show_entries", "stream=width,height:format=duration,bit_rate,size",
+                "-of", "json", path,
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            streams = data.get("streams", [{}])
+            fmt = data.get("format", {})
+            video_stream = next((s for s in streams if s.get("width")), streams[0] if streams else {})
+            w = video_stream.get("width", "?")
+            h = video_stream.get("height", "?")
+            dur = round(float(fmt.get("duration", 0)), 2)
+            br_kbps = round(int(fmt.get("bit_rate", 0)) / 1000)
+            size_mb = round(int(fmt.get("size", 0)) / 1024 / 1024, 2)
+            print(
+                json.dumps({
+                    "ffprobe": label,
+                    "path": str(path),
+                    "width": w, "height": h,
+                    "duration_sec": dur,
+                    "bitrate_kbps": br_kbps,
+                    "size_mb": size_mb,
+                }),
+                flush=True,
+            )
+    except Exception as e:
+        # Non-fatal — never block the pipeline
+        print(json.dumps({"ffprobe_warn": f"ffprobe {label} failed: {str(e)}"}), flush=True)
+
 
 def _get_duration(path):
     try:

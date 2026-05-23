@@ -534,6 +534,27 @@ function _downloadVideo(url, videoDir) {
         size: fs.statSync(finalPath).size,
       });
 
+      // Non-fatal ffprobe quality log (width, height, bitrate)
+      try {
+        const { spawnSync } = require('child_process');
+        const qr = spawnSync('ffprobe', [
+          '-v', 'quiet',
+          '-show_entries', 'stream=width,height:format=duration,bit_rate',
+          '-of', 'json', finalPath,
+        ], { timeout: 10000 });
+        if (qr.status === 0) {
+          const qd = JSON.parse(qr.stdout.toString());
+          const vstream = (qd.streams || []).find(s => s.width) || {};
+          const fmt = qd.format || {};
+          logger.info('source.mp4 quality', {
+            agent: AGENT,
+            width: vstream.width, height: vstream.height,
+            duration: parseFloat(fmt.duration || 0).toFixed(2),
+            bitrate_kbps: Math.round(parseInt(fmt.bit_rate || 0) / 1000),
+          });
+        }
+      } catch (_) { /* non-fatal */ }
+
       resolve({
         success: true,
         videoPath: finalPath,
