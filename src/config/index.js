@@ -106,11 +106,21 @@ const config = {
     width:       parseInt(process.env.VIDEO_WIDTH        || '1080', 10),
     height:      parseInt(process.env.VIDEO_HEIGHT       || '1920', 10),
     fps:         parseInt(process.env.VIDEO_FPS          || '30',   10),
-    // Render quality
-    crf:         parseInt(process.env.VIDEO_CRF          || '20',   10),
-    preset:      process.env.VIDEO_PRESET                || 'veryfast',
-    audioBitrate: process.env.VIDEO_AUDIO_BITRATE        || '192k',
-    scaleFlags:  process.env.VIDEO_SCALE_FLAGS           || 'lanczos',
+    // Render quality — with sanitization
+    crf:         (() => {
+      const v = parseInt(process.env.VIDEO_CRF || '20', 10);
+      return (!Number.isFinite(v) || v < 15 || v > 35) ? 20 : v;
+    })(),
+    preset:      (() => {
+      const VALID_PRESETS = ['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow'];
+      const v = (process.env.VIDEO_PRESET || 'veryfast').toLowerCase();
+      return VALID_PRESETS.includes(v) ? v : 'veryfast';
+    })(),
+    audioBitrate: (() => {
+      const v = (process.env.VIDEO_AUDIO_BITRATE || '192k').toLowerCase();
+      return /^\d+(k|m)$/.test(v) ? v : '192k';
+    })(),
+    scaleFlags:  process.env.VIDEO_SCALE_FLAGS || 'lanczos',
     // Face-aware crop (optional, default off for stability)
     enableFaceCrop: process.env.ENABLE_FACE_CROP === 'true',
   },

@@ -69,11 +69,20 @@ def process_clip(cfg):
     output_thumbnail = cfg["output_thumbnail"]
     work_dir = cfg.get("work_dir", os.path.dirname(output_video))
 
-    # Render quality settings (passed from Node config / env)
-    crf = int(cfg.get("crf", 20))
-    preset = str(cfg.get("preset", "veryfast"))
-    audio_bitrate = str(cfg.get("audio_bitrate", "192k"))
-    scale_flags = str(cfg.get("scale_flags", "lanczos"))
+    # Render quality settings — prefer values passed in cfg, fallback to env vars
+    _VALID_PRESETS = {"ultrafast","superfast","veryfast","faster","fast","medium","slow","slower","veryslow"}
+
+    _crf_raw = int(cfg.get("crf", os.environ.get("VIDEO_CRF", "20")))
+    crf = _crf_raw if 15 <= _crf_raw <= 35 else 20
+
+    _preset_raw = str(cfg.get("preset", os.environ.get("VIDEO_PRESET", "veryfast"))).lower()
+    preset = _preset_raw if _preset_raw in _VALID_PRESETS else "veryfast"
+
+    _abr = str(cfg.get("audio_bitrate", os.environ.get("VIDEO_AUDIO_BITRATE", "192k"))).lower()
+    import re as _re
+    audio_bitrate = _abr if _re.match(r"^\d+(k|m)$", _abr) else "192k"
+
+    scale_flags = str(cfg.get("scale_flags", os.environ.get("VIDEO_SCALE_FLAGS", "lanczos")))
     caption_template = str(cfg.get("caption_template", "default")).lower()
     enable_face_crop = bool(cfg.get("enable_face_crop", False))
 
@@ -114,8 +123,8 @@ def process_clip(cfg):
 
     actual_duration = _get_duration(output_video)
 
-    # ffprobe log of final render (non-fatal)
-    _log_ffprobe("final", output_video)
+    # ffprobe log of final render (non-fatal) — reports actual video quality
+    _log_ffprobe("final", output_video, render_settings={"crf": crf, "preset": preset, "audio_bitrate": audio_bitrate})
 
     return {
         "final_video_path": output_video,
@@ -703,7 +712,7 @@ def _generate_thumbnail(video_path, thumb_path, width, height):
 
 # ─── Utils ────────────────────────────────────────────────────────────────────
 
-def _log_ffprobe(label, path):
+def _log_ffprobe(label, path, render_settings=None):
     """Log ffprobe info (width, height, duration, bitrate). Non-fatal."""
     try:
         result = subprocess.run(
@@ -724,17 +733,17 @@ def _log_ffprobe(label, path):
             dur = round(float(fmt.get("duration", 0)), 2)
             br_kbps = round(int(fmt.get("bit_rate", 0)) / 1000)
             size_mb = round(int(fmt.get("size", 0)) / 1024 / 1024, 2)
-            print(
-                json.dumps({
-                    "ffprobe": label,
-                    "path": str(path),
-                    "width": w, "height": h,
-                    "duration_sec": dur,
-                    "bitrate_kbps": br_kbps,
-                    "size_mb": size_mb,
-                }),
-                flush=True,
-            )
+            entry = {
+                "ffprobe": label,
+                "path": str(path),
+                "width": w, "height": h,
+                "duration_sec": dur,
+                "bitrate_kbps": br_kbps,
+                "size_mb": size_mb,
+            }
+            if render_settings:
+                entry["render_settings"] = render_settings
+            print(json.dumps(entry), flush=True)
     except Exception as e:
         # Non-fatal — never block the pipeline
         print(json.dumps({"ffprobe_warn": f"ffprobe {label} failed: {str(e)}"}), flush=True)
