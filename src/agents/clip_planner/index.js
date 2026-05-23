@@ -321,7 +321,7 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
   const cappedClips = enrichedClips.slice(0, config.maxClipsPerSource);
   if (cappedClips.length < originalCount) {
     logger.info('Clip count limited by MAX_CLIPS_PER_SOURCE', {
-      agent: AGENT, originalCount, limitedCount: cappedClips.length,
+      agent: AGENT, originalCount, limitedCount: cappedClips.length, maxClipsPerSource: config.maxClipsPerSource,
     });
   }
 

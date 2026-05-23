@@ -85,7 +85,7 @@ const config = {
   clipPlannerRequireLlm: process.env.CLIP_PLANNER_REQUIRE_LLM === 'true',
 
   // Clips per source hard cap (for testing / production cost control)
-  maxClipsPerSource: parseInt(process.env.MAX_CLIPS_PER_SOURCE || '3', 10),
+  maxClipsPerSource: Math.max(1, Math.min(10, parseInt(process.env.MAX_CLIPS_PER_SOURCE || '3', 10) || 3)),
 
   // Timeouts (ms)
   timeouts: {
