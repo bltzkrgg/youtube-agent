@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Transcribe a video/audio file using OpenAI Whisper.
+Transcribe a video or audio file using OpenAI Whisper (local, no external API).
 Usage: python whisper_transcribe.py <input_path> <output_json_path> [model_size]
-Output: JSON { "text": "...", "segments": [...] }
+
+input_path can be:
+  - audio_16k.wav  (preferred — extracted mono 16kHz WAV, faster and more stable)
+  - source.mp4     (fallback — Whisper decodes internally, but slower)
+
+Output JSON: { "text": "...", "language": "...", "segments": [...] }
 """
 
 import sys

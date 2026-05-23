@@ -67,10 +67,16 @@ async function _processTranscript(sourceVideoId, correlationId) {
   // Validate source.mp4 before running Whisper — avoid infinite retry on corrupt file
   await _validateSourceVideo(sourceVideoId, videoPath);
 
-  logger.info('Melakukan transkripsi dengan Whisper', { agent: AGENT, videoPath });
+  // Extract mono 16kHz WAV for Whisper — more stable than feeding raw MP4
+  const audioPath = path.join(config.paths.output, sourceVideoId, 'audio_16k.wav');
+  const whisperInput = await _extractAudio(videoPath, audioPath, sourceVideoId);
+
+  logger.info('Melakukan transkripsi dengan Whisper', {
+    agent: AGENT, audioPath: whisperInput, usingExtractedAudio: whisperInput === audioPath,
+  });
 
   const transcriptData = await withRetry(
-    () => _runWhisper(videoPath, sourceVideoId),
+    () => _runWhisper(whisperInput, sourceVideoId),
     { maxRetry: config.maxRetry, agent: AGENT, step: 'whisperTranscribe' }
   );
 
@@ -177,6 +183,78 @@ function _ffprobeVideo(videoPath) {
 
     proc.on('error', (err) => {
       resolve({ success: false, duration: 0, error: `spawn ffprobe: ${err.message}` });
+    });
+  });
+}
+
+// ─── Extract audio for Whisper ───────────────────────────────────────────────
+
+/**
+ * Extracts mono 16kHz WAV from source video. Returns the audio path on success,
+ * or falls back to the original video path if extraction fails (non-fatal).
+ */
+async function _extractAudio(videoPath, audioPath, sourceVideoId) {
+  // If WAV already exists and is non-trivial, reuse it (idempotent)
+  if (fs.existsSync(audioPath)) {
+    const existingSize = fs.statSync(audioPath).size;
+    if (existingSize > 1024) {
+      logger.info('audio_16k.wav sudah ada, reuse', {
+        agent: AGENT, sourceVideoId, audioPath, sizeKB: Math.round(existingSize / 1024),
+      });
+      return audioPath;
+    }
+    // Too small — delete and re-extract
+    fs.unlinkSync(audioPath);
+  }
+
+  const startMs = Date.now();
+
+  return new Promise((resolve) => {
+    const proc = spawn('ffmpeg', [
+      '-y',
+      '-i', videoPath,
+      '-vn',            // drop video stream
+      '-ac', '1',       // mono
+      '-ar', '16000',   // 16 kHz sample rate (Whisper native)
+      '-acodec', 'pcm_s16le',
+      audioPath,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stderr = '';
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    proc.on('close', (code) => {
+      const elapsedMs = Date.now() - startMs;
+
+      if (code !== 0 || !fs.existsSync(audioPath)) {
+        logger.warn('Audio extraction gagal, fallback ke source.mp4', {
+          agent: AGENT, sourceVideoId, videoPath, audioPath,
+          exitCode: code, elapsedMs,
+          fallbackReason: code !== 0 ? `ffmpeg exit ${code}: ${stderr.slice(-200)}` : 'output file missing',
+        });
+        return resolve(videoPath); // fallback
+      }
+
+      const sizeKB = Math.round(fs.statSync(audioPath).size / 1024);
+      if (sizeKB < 1) {
+        logger.warn('audio_16k.wav terlalu kecil, fallback ke source.mp4', {
+          agent: AGENT, sourceVideoId, audioPath, sizeKB,
+          fallbackReason: 'extracted WAV too small',
+        });
+        return resolve(videoPath); // fallback
+      }
+
+      logger.info('Audio extracted untuk Whisper', {
+        agent: AGENT, sourceVideoId, audioPath, sizeKB, elapsedMs,
+      });
+      resolve(audioPath);
+    });
+
+    proc.on('error', (err) => {
+      logger.warn('Spawn ffmpeg gagal untuk audio extraction, fallback ke source.mp4', {
+        agent: AGENT, sourceVideoId, fallbackReason: err.message,
+      });
+      resolve(videoPath); // fallback
     });
   });
 }
