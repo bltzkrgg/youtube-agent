@@ -1253,26 +1253,34 @@ async function _handleResetTestConfirm(chatId) {
 
 async function _sendSources(chatId) {
   try {
-    const db = getDb();
-    const sources = db.prepare(`
-      SELECT id, video_title, channel_title, status, permission_status, allowed_to_clip, risk_level
-      FROM source_videos
-      ORDER BY created_at DESC
-      LIMIT 10
-    `).all();
+    const { getRecentSourcesWithProgress } = require('../utils/db');
+    const sources = getRecentSourcesWithProgress(10);
 
     if (sources.length === 0) {
       await _sendMessage(chatId, '📭 Tidak ada source video\\.', { parse_mode: 'MarkdownV2' });
       return;
     }
 
+    const stageEmoji = {
+      waiting: '⏳', processing: '🔄', transcript: '📝', scene_detect: '🎬',
+      clip_planner: '🤖', clip_render: '⚙️', clips_created: '✂️',
+      rendered: '🎞', pending_review: '👀', clips_approved: '✅', failed: '❌',
+    };
+
     let msg = `📺 *Source Videos* \\(${_escape(sources.length)} terbaru\\)\n\n`;
     for (const sv of sources) {
       const permEmoji = sv.allowed_to_clip ? '✅' : '⚠️';
-      msg += `${permEmoji} ${_escape(sv.video_title || '-')}\n` +
-        `  📌 ${_escape(sv.channel_title || '-')}\n` +
-        `  🆔 ${_code(sv.id)}\n` +
-        `  Status: ${_escape(sv.status)} \\| Perm: ${_escape(sv.permission_status)} \\| Risk: ${_escape(sv.risk_level)}\n\n`;
+      const se = stageEmoji[sv.stage] || '•';
+      const titleShort = _escape((sv.video_title || '-').slice(0, 40));
+      const clipLine = sv.totalClips > 0
+        ? `${_escape(sv.totalClips)} clips`
+        : 'no clips yet';
+
+      msg += `${se}${permEmoji} *${titleShort}*\n`;
+      msg += `  📌 ${_escape((sv.channel_title || '-').slice(0, 30))}\n`;
+      msg += `  🆔 ${_code(sv.id)}\n`;
+      msg += `  Stage: ${_escape(sv.stage)} \\| ${_escape(clipLine)}\n`;
+      msg += `  Perm: ${_escape(sv.permission_status)} \\| Risk: ${_escape(sv.risk_level)}\n\n`;
     }
 
     await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
@@ -1425,125 +1433,142 @@ async function _sendHelp(chatId) {
 
 async function _sendDetailedStatus(chatId) {
   try {
-    const { countRows, getDeadLetterSummary } = require('../utils/db');
+    const { countRows, getDeadLetterSummary, getRecentSourcesWithProgress } = require('../utils/db');
     const db = getDb();
-    
-    // Source videos by status
-    const sourcesByStatus = db.prepare(`
-      SELECT status, COUNT(*) as count 
-      FROM source_videos 
-      GROUP BY status
-    `).all();
-    
-    // Clips by status
-    const clipsByStatus = db.prepare(`
-      SELECT status, COUNT(*) as count 
-      FROM clips 
-      GROUP BY status
-    `).all();
-    
-    // Jobs by type and status
-    const jobsByType = db.prepare(`
-      SELECT type, status, COUNT(*) as count 
-      FROM jobs 
-      GROUP BY type, status
-    `).all();
-    
+
+    // ── Aggregate counts ──────────────────────────────────────────────────
+    const sourcesByStatus = db.prepare(
+      'SELECT status, COUNT(*) as count FROM source_videos GROUP BY status'
+    ).all();
+
+    const clipsByStatus = db.prepare(
+      'SELECT status, COUNT(*) as count FROM clips GROUP BY status'
+    ).all();
+
+    const jobsByType = db.prepare(
+      'SELECT type, status, COUNT(*) as count FROM jobs GROUP BY type, status'
+    ).all();
+
     const deadLetterSummary = getDeadLetterSummary();
-    
-    // Calculate orphans (quick check)
+
     let orphanCount = 0;
     try {
       const { findOrphanJobs } = require('../utils/db');
       orphanCount = findOrphanJobs().length;
-    } catch (e) {
-      // Ignore if fails
-    }
-    
-    let msg = `📊 *System Status*\n\n`;
-    
-    // Mode
-    msg += `*Mode:* ${config.dryRun ? '🔵 DRY\\_RUN' : '🟢 PRODUCTION'}\n\n`;
-    
-    // Source Videos
+    } catch (_) {}
+
+    // ── Build message ─────────────────────────────────────────────────────
+    let msg = `📊 *System Status*\n`;
+    msg += `Mode: ${config.dryRun ? '🔵 DRY\\_RUN' : '🟢 PRODUCTION'}\n\n`;
+
+    // Source aggregate
     msg += `*Source Videos:*\n`;
     if (sourcesByStatus.length > 0) {
       for (const row of sourcesByStatus) {
-        msg += `• ${_escape(row.status)}: ${_escape(row.count)}\n`;
+        const emoji = { processing: '🔄', failed: '❌', completed: '✅' }[row.status] || '•';
+        msg += `${emoji} ${_escape(row.status)}: ${_escape(row.count)}\n`;
       }
     } else {
-      msg += `• None\n`;
+      msg += `  None\n`;
     }
-    
-    // Clips
+
+    // Clips aggregate
     msg += `\n*Clips:*\n`;
     if (clipsByStatus.length > 0) {
+      const clipEmoji = { pending: '⏳', rendered: '🎬', pending_review: '👀',
+                          approved: '✅', rejected: '❌', uploaded: '📤', manual_review: '⚠️' };
       for (const row of clipsByStatus) {
-        msg += `• ${_escape(row.status)}: ${_escape(row.count)}\n`;
+        const e = clipEmoji[row.status] || '•';
+        msg += `${e} ${_escape(row.status)}: ${_escape(row.count)}\n`;
       }
     } else {
-      msg += `• None\n`;
+      msg += `  None\n`;
     }
-    
+
     // Jobs summary
     msg += `\n*Jobs:*\n`;
     if (jobsByType.length > 0) {
       const jobSummary = {};
       for (const row of jobsByType) {
-        const key = `${row.type}/${row.status}`;
-        jobSummary[key] = row.count;
+        jobSummary[`${row.type}/${row.status}`] = row.count;
       }
-      
       const entries = Object.entries(jobSummary).slice(0, 10);
       for (const [key, count] of entries) {
         msg += `• ${_escape(key)}: ${_escape(count)}\n`;
       }
-      
       if (Object.keys(jobSummary).length > 10) {
         msg += `• \\.\\.\\. and ${_escape(Object.keys(jobSummary).length - 10)} more\n`;
       }
     } else {
-      msg += `• None\n`;
+      msg += `  None\n`;
     }
-    
-    // Dead letter
-    msg += `\n*Dead Letter:* ${_escape(deadLetterSummary.total)}\n`;
-    
-    // Orphans
-    if (orphanCount > 0) {
-      msg += `\n⚠️ *Orphan Jobs:* ${_escape(orphanCount)}\n`;
-      msg += `Use ${_code('/clear_orphans')} to remove\\.`;
-    }
-    
-    // Recent failures
+
+    // Dead letter + orphans
+    msg += `\n*Dead Letter:* ${_escape(deadLetterSummary.total)}`;
+    if (orphanCount > 0) msg += `  ⚠️ *Orphans:* ${_escape(orphanCount)}`;
+    msg += '\n';
+
+    // Recent failures (up to 5)
     if (deadLetterSummary.recent.length > 0) {
-      msg += `\n\n*Recent Failures:*\n`;
-      for (const item of deadLetterSummary.recent.slice(0, 3)) {
-        const errorShort = String(item.error || 'Unknown').slice(0, 50);
+      msg += `\n*Recent Failures \\(${_escape(Math.min(5, deadLetterSummary.recent.length))}\\):*\n`;
+      for (const item of deadLetterSummary.recent.slice(0, 5)) {
+        const errorShort = String(item.error || 'Unknown').slice(0, 60);
         msg += `• ${_escape(item.type)}: ${_escape(errorShort)}\n`;
       }
     }
 
-    // Sources needing approval
+    await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
+
+    // ── Per-source pipeline progress (separate message to avoid length limits) ─
+    const recentSources = getRecentSourcesWithProgress(5);
+    if (recentSources.length > 0) {
+      let progressMsg = `🔍 *Pipeline Progress \\(${_escape(recentSources.length)} terbaru\\):*\n\n`;
+
+      const stageEmoji = {
+        waiting: '⏳', processing: '🔄', transcript: '📝', scene_detect: '🎬',
+        clip_planner: '🤖', clip_render: '⚙️', clips_created: '✂️',
+        rendered: '🎞', pending_review: '👀', clips_approved: '✅',
+        failed: '❌',
+      };
+
+      for (const sv of recentSources) {
+        const permEmoji = sv.allowed_to_clip ? '✅' : '⚠️';
+        const se = stageEmoji[sv.stage] || '•';
+        const titleShort = _escape((sv.video_title || '-').slice(0, 40));
+        const clipSummary = sv.totalClips > 0
+          ? `${_escape(sv.totalClips)} clips` + (sv.clipsByStatus['pending_review']
+              ? ` \\(${_escape(sv.clipsByStatus['pending_review'])} review\\)` : '')
+          : 'no clips';
+
+        progressMsg += `${se} *${titleShort}*\n`;
+        progressMsg += `  ${permEmoji} ${_escape(sv.stage)} \\| ${clipSummary}\n`;
+        progressMsg += `  🆔 ${_code(sv.id)}\n`;
+
+        if (!sv.allowed_to_clip) {
+          progressMsg += `  ${_code('/approve_source ' + sv.id)}\n`;
+        }
+        progressMsg += '\n';
+      }
+
+      await _sendMessage(chatId, progressMsg, { parse_mode: 'MarkdownV2' });
+    }
+
+    // ── Pending approval sources ──────────────────────────────────────────
     const { getSourcesNeedingApproval } = require('../utils/db');
     const pendingSources = getSourcesNeedingApproval(5);
     if (pendingSources.length > 0) {
-      msg += `\n\n⚠️ *Sources Menunggu Approval \\(${_escape(pendingSources.length)}\\):*\n`;
+      let approvalMsg = `⚠️ *Sources Menunggu Approval \\(${_escape(pendingSources.length)}\\):*\n`;
       for (const sv of pendingSources) {
-        msg += `• ${_escape(sv.video_title || '-')} \\| ${_escape(sv.risk_level)}\n`;
-        msg += `  ${_code('/approve_source ' + sv.id)}\n`;
+        approvalMsg += `• ${_escape((sv.video_title || '-').slice(0, 35))} \\| ${_escape(sv.risk_level)}\n`;
+        approvalMsg += `  ${_code('/approve_source ' + sv.id)}\n`;
       }
-      msg += `\nAtau gunakan ${_code('/pending_sources')} untuk tombol approve\\.`;
+      approvalMsg += `\nGunakan ${_code('/pending_sources')} untuk tombol approve\\.`;
+      await _sendMessage(chatId, approvalMsg, { parse_mode: 'MarkdownV2' });
     }
 
-    await _sendMessage(chatId, msg, { parse_mode: 'MarkdownV2' });
   } catch (err) {
     logger.error('Gagal get status', { agent: AGENT, error_message: err.message });
-    await _sendMessage(
-      chatId,
-      `❌ Error: ${_escape(err.message)}`,
-      { parse_mode: 'MarkdownV2' }
-    );
+    await _sendMessage(chatId, `❌ Error: ${_escape(err.message)}`, { parse_mode: 'MarkdownV2' });
   }
 }
 

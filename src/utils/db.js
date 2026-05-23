@@ -608,6 +608,75 @@ function getSourcesNeedingApproval(limit = 5) {
   `).all(limit);
 }
 
+/**
+ * Recent source videos with clip counts and inferred pipeline stage.
+ * Pipeline stage is derived from job queue and clip statuses — no schema change needed.
+ */
+function getRecentSourcesWithProgress(limit = 5) {
+  const db = getDb();
+  const sources = db.prepare(`
+    SELECT id, video_title, channel_title, status, permission_status,
+           allowed_to_clip, risk_level, risk_notes, created_at, updated_at
+    FROM source_videos
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(limit);
+
+  return sources.map(sv => {
+    // Clip counts
+    const clipCounts = db.prepare(`
+      SELECT status, COUNT(*) as count
+      FROM clips
+      WHERE source_video_id = ?
+      GROUP BY status
+    `).all(sv.id);
+
+    const totalClips = clipCounts.reduce((s, r) => s + r.count, 0);
+    const clipsByStatus = {};
+    for (const row of clipCounts) {
+      clipsByStatus[row.status] = row.count;
+    }
+
+    // Pending jobs for this source
+    const pendingJobs = db.prepare(`
+      SELECT type, status
+      FROM jobs
+      WHERE json_extract(payload, '$.source_video_id') = ?
+        AND status IN ('pending', 'processing')
+      ORDER BY created_at ASC
+      LIMIT 3
+    `).all(sv.id);
+
+    // Infer pipeline stage
+    let stage = 'waiting';
+    if (sv.status === 'failed') {
+      stage = 'failed';
+    } else if (sv.status === 'processing') {
+      if (pendingJobs.length > 0) {
+        stage = pendingJobs[0].type; // e.g. 'transcript', 'scene_detect', 'clip_planner', 'clip_render'
+      } else if (totalClips > 0) {
+        const hasPendingReview = (clipsByStatus['pending_review'] || 0) > 0;
+        const hasRendered = (clipsByStatus['rendered'] || 0) > 0;
+        const hasApproved = (clipsByStatus['approved'] || 0) > 0;
+        if (hasApproved) stage = 'clips_approved';
+        else if (hasPendingReview) stage = 'pending_review';
+        else if (hasRendered) stage = 'rendered';
+        else stage = 'clips_created';
+      } else {
+        stage = 'processing';
+      }
+    }
+
+    return {
+      ...sv,
+      totalClips,
+      clipsByStatus,
+      stage,
+      pendingJobTypes: pendingJobs.map(j => j.type),
+    };
+  });
+}
+
 function findOrphanJobs() {
   const db = getDb();
   const fs = require('fs');
@@ -737,7 +806,8 @@ module.exports = {
   insertAnalytics, getAnalyticsByClip,
   // Admin Operations
   countRows, clearJobs, clearDeadLetters, clearMemory, clearAllTestState,
-  getDetailedJobStats, getDeadLetterSummary, deleteJobsByIds, findOrphanJobs, getSourcesNeedingApproval,
+  getDetailedJobStats, getDeadLetterSummary, deleteJobsByIds, findOrphanJobs,
+  getSourcesNeedingApproval, getRecentSourcesWithProgress,
   // Lifecycle
   closeDb,
 };
