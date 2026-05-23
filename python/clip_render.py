@@ -74,6 +74,7 @@ def process_clip(cfg):
     preset = str(cfg.get("preset", "veryfast"))
     audio_bitrate = str(cfg.get("audio_bitrate", "192k"))
     scale_flags = str(cfg.get("scale_flags", "lanczos"))
+    caption_template = str(cfg.get("caption_template", "default")).lower()
 
     os.makedirs(work_dir, exist_ok=True)
 
@@ -91,21 +92,15 @@ def process_clip(cfg):
     _reframe_clip(extracted_clip, reframed_clip, width, height, fps, reframe_strategy, reframe_details, crf, preset, scale_flags)
 
     # Step 3: Burn captions
-    if captions_data and captions_data.get("srt_format"):
-        # Use advanced SRT captions
-        captioned_clip = os.path.join(work_dir, "captioned.mp4")
-        srt_path = os.path.join(work_dir, "captions.srt")
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(captions_data["srt_format"])
-        _burn_srt_captions(reframed_clip, captioned_clip, srt_path, captions_data.get("caption_style", {}), crf, preset)
-        final_clip = captioned_clip
-    elif caption_plan and caption_plan.lower() not in ["none", "no caption"]:
-        # Fallback to simple caption
-        captioned_clip = os.path.join(work_dir, "captioned.mp4")
-        _burn_simple_caption(reframed_clip, captioned_clip, caption_plan, width, height, crf, preset)
-        final_clip = captioned_clip
-    else:
-        final_clip = reframed_clip
+    final_clip = _burn_captions(
+        reframed_clip,
+        work_dir,
+        captions_data,
+        caption_plan,
+        width, height,
+        crf, preset,
+        caption_template,
+    )
 
     # Step 4: Copy to final output
     if final_clip != output_video:
@@ -217,101 +212,312 @@ def _zoom_in_filter(width, height, fps, reframe_details, scale_flags="lanczos"):
     )
 
 
-# ─── Burn SRT captions (advanced) ────────────────────────────────────────────
+# ─── Caption template definitions ────────────────────────────────────────────
+
+# Each template: font_size_ratio (relative to width), stroke, shadow, margin_v_ratio,
+#                max_chars (per line), primary_color (ASS BGR+alpha), bold
+_CAPTION_TEMPLATES = {
+    "default": {
+        "font_size_ratio": 0.048,   # ~52px at 1080px wide
+        "outline":          3,
+        "shadow":           1,
+        "margin_v_ratio":   0.06,   # bottom margin = 6% of height
+        "max_chars":        32,
+        "primary_color":    "&H00FFFFFF",   # white
+        "back_color":       "&H80000000",   # semi-transparent black box
+        "bold":             0,
+        "border_style":     3,       # 3 = opaque box
+        "alignment":        2,       # bottom-center
+    },
+    "tiktok_bold": {
+        "font_size_ratio": 0.058,   # ~63px at 1080px wide — large & punchy
+        "outline":          4,
+        "shadow":           2,
+        "margin_v_ratio":   0.065,
+        "max_chars":        28,
+        "primary_color":    "&H00FFFFFF",   # white
+        "back_color":       "&HA0000000",   # darker box
+        "bold":             1,
+        "border_style":     3,
+        "alignment":        2,
+    },
+    "minimal": {
+        "font_size_ratio": 0.036,   # ~39px at 1080px wide — small & subtle
+        "outline":          1,
+        "shadow":           0,
+        "margin_v_ratio":   0.04,
+        "max_chars":        40,
+        "primary_color":    "&H00E0E0E0",   # light grey
+        "back_color":       "&H60000000",
+        "bold":             0,
+        "border_style":     1,       # 1 = outline only (no box)
+        "alignment":        2,
+    },
+}
+
+def _get_template(name):
+    return _CAPTION_TEMPLATES.get(name, _CAPTION_TEMPLATES["default"])
+
+
+# ─── Unified caption entry point ─────────────────────────────────────────────
+
+def _burn_captions(input_path, work_dir, captions_data, caption_plan,
+                   width, height, crf, preset, caption_template):
+    """
+    Unified caption burn with template system and safe fallback chain:
+      1. Advanced SRT from CaptionAgent  → write ASS with template style
+      2. Plain caption_plan text (string) → drawtext fallback
+      3. No caption                       → return input unchanged
+    Never raises — any burn failure falls back to no-subtitle copy.
+    """
+    captioned_clip = os.path.join(work_dir, "captioned.mp4")
+    tpl = _get_template(caption_template)
+
+    # ── Path 1: Advanced SRT from CaptionAgent ──
+    if captions_data and isinstance(captions_data, dict):
+        srt_content = captions_data.get("srt_format", "")
+        if srt_content and srt_content.strip():
+            srt_path = os.path.join(work_dir, "captions.srt")
+            try:
+                with open(srt_path, "w", encoding="utf-8") as f:
+                    f.write(srt_content)
+
+                print(json.dumps({
+                    "caption_log": "burn_srt",
+                    "template": caption_template,
+                    "srt_path": srt_path,
+                }), flush=True)
+
+                ok = _burn_ass_styled(input_path, captioned_clip, srt_path,
+                                      tpl, width, height, crf, preset)
+                if ok:
+                    return captioned_clip
+                # SRT burn failed — fall through to drawtext
+                print(json.dumps({
+                    "caption_log": "srt_burn_failed_fallback_drawtext",
+                    "template": caption_template,
+                }), flush=True)
+            except Exception as e:
+                print(json.dumps({
+                    "caption_log": "srt_write_error",
+                    "error": str(e),
+                    "fallback": "drawtext",
+                }), flush=True)
+
+    # ── Path 2: Simple caption_plan string ──
+    if caption_plan and str(caption_plan).lower() not in ("", "none", "no caption", "default caption"):
+        print(json.dumps({
+            "caption_log": "burn_drawtext",
+            "template": caption_template,
+        }), flush=True)
+        ok = _burn_drawtext(input_path, captioned_clip, str(caption_plan),
+                            tpl, width, height, crf, preset)
+        if ok:
+            return captioned_clip
+        print(json.dumps({
+            "caption_log": "drawtext_failed_no_subtitle",
+        }), flush=True)
+
+    # ── Path 3: No caption — return input as-is ──
+    print(json.dumps({
+        "caption_log": "no_caption",
+        "fallback_reason": "no captions_data and no caption_plan",
+    }), flush=True)
+    return input_path
+
+
+# ─── ASS-styled subtitle burn ─────────────────────────────────────────────────
+
+def _build_ass_style(tpl, width, height):
+    """Build an ASS [V4+ Styles] header from template settings."""
+    font_size = max(12, int(width * tpl["font_size_ratio"]))
+    margin_v  = max(20, int(height * tpl["margin_v_ratio"]))
+    # Clamp margin so subtitles stay within safe area (bottom 8% reserved)
+    max_margin = int(height * 0.08)
+    margin_v   = min(margin_v, max_margin)
+
+    return (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {width}\n"
+        f"PlayResY: {height}\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,Arial,{font_size},"
+        f"{tpl['primary_color']},&H000000FF,&H00000000,{tpl['back_color']},"
+        f"{tpl['bold']},0,0,0,"
+        "100,100,0,0,"
+        f"{tpl['border_style']},{tpl['outline']},{tpl['shadow']},"
+        f"{tpl['alignment']},30,30,{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+
+def _srt_time_to_ass(srt_ts):
+    """Convert SRT timestamp (00:00:00,000) to ASS format (0:00:00.00)."""
+    try:
+        srt_ts = srt_ts.strip().replace(",", ".")
+        h, m, s = srt_ts.split(":")
+        s_int, ms = s.split(".")
+        cs = int(ms[:2])  # centiseconds
+        return f"{int(h)}:{int(m):02d}:{int(s_int):02d}.{cs:02d}"
+    except Exception:
+        return "0:00:00.00"
+
+
+def _srt_to_ass_events(srt_content, max_chars):
+    """Parse SRT and emit ASS Dialogue lines, wrapping long lines."""
+    lines = []
+    blocks = srt_content.strip().split("\n\n")
+    for block in blocks:
+        rows = block.strip().split("\n")
+        if len(rows) < 2:
+            continue
+        # Find timing line
+        timing_line = next((r for r in rows if "-->" in r), None)
+        if not timing_line:
+            continue
+        parts = timing_line.split("-->")
+        if len(parts) < 2:
+            continue
+        start_ass = _srt_time_to_ass(parts[0].strip())
+        end_ass   = _srt_time_to_ass(parts[1].strip())
+        text_rows = [r for r in rows if r != timing_line and not r.strip().isdigit()]
+        raw_text  = " ".join(text_rows).strip()
+        if not raw_text:
+            continue
+        # Wrap to max_chars per line (use ASS \N line break)
+        wrapped = textwrap.fill(raw_text, width=max_chars)
+        ass_text = wrapped.replace("\n", "\\N")
+        lines.append(
+            f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{ass_text}"
+        )
+    return "\n".join(lines)
+
+
+def _build_ass_file(srt_content, tpl, width, height):
+    """Build a complete .ass file string from SRT content and template."""
+    header = _build_ass_style(tpl, width, height)
+    events = _srt_to_ass_events(srt_content, tpl["max_chars"])
+    return header + events + "\n"
+
+
+def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf, preset):
+    """Burn subtitles from SRT using ASS template. Returns True on success."""
+    try:
+        with open(srt_path, encoding="utf-8") as f:
+            srt_content = f.read()
+
+        if not srt_content.strip():
+            return False
+
+        ass_path = srt_path.replace(".srt", ".ass")
+        ass_content = _build_ass_file(srt_content, tpl, width, height)
+        with open(ass_path, "w", encoding="utf-8") as f:
+            f.write(ass_content)
+
+        vf = f"ass={ass_path}"
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return True
+        # ASS burn failed — try raw SRT fallback
+        vf_srt = (
+            f"subtitles={srt_path}:force_style='"
+            f"FontName=Arial,"
+            f"FontSize={max(12, int(width * tpl['font_size_ratio']))},"
+            f"PrimaryColour={tpl['primary_color']},"
+            f"OutlineColour=&H00000000,"
+            f"BorderStyle={tpl['border_style']},"
+            f"Outline={tpl['outline']},"
+            f"Shadow={tpl['shadow']},"
+            f"Alignment={tpl['alignment']},"
+            f"MarginV={max(20, int(height * tpl['margin_v_ratio']))}"
+            f"'"
+        )
+        cmd2 = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vf", vf_srt,
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        result2 = subprocess.run(cmd2, capture_output=True, text=True)
+        return result2.returncode == 0
+    except Exception:
+        return False
+
+
+# ─── Drawtext fallback (no SRT, plain caption_plan string) ───────────────────
+
+def _burn_drawtext(input_path, output_path, caption_text, tpl, width, height, crf, preset):
+    """Burn plain text using drawtext. Returns True on success."""
+    try:
+        font_size  = max(12, int(width * tpl["font_size_ratio"]))
+        margin_v   = max(20, min(int(height * tpl["margin_v_ratio"]), int(height * 0.08)))
+        # y position: height - margin - estimated text block height
+        y_pos = f"h-{margin_v + font_size * 2}"
+
+        wrapped    = textwrap.fill(caption_text[:200], width=tpl["max_chars"])
+        safe_text  = _escape_ffmpeg_text(wrapped)
+
+        vf = (
+            f"drawtext=text='{safe_text}'"
+            f":fontsize={font_size}"
+            f":fontcolor=white"
+            f":bordercolor=black:borderw={tpl['outline']}"
+            f":x=(w-tw)/2:y={y_pos}"
+            f":box=1:boxcolor=black@0.6:boxborderw=8"
+            f":line_spacing=4"
+        )
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+# ─── Keep old helpers for backward compat (unused internally) ─────────────────
 
 def _burn_srt_captions(input_path, output_path, srt_path, caption_style, crf=20, preset="veryfast"):
-    """
-    Burn SRT subtitles with advanced styling.
-    Uses FFmpeg subtitles filter with ASS styling.
-    """
-    
-    # Map caption_style to ASS style
-    font_size = 48 if caption_style.get("font_size") == "large" else 40
-    color = caption_style.get("color", "white")
-    position = caption_style.get("position", "bottom")
-    
-    # Convert color name to hex
-    color_map = {
-        "white": "&HFFFFFF",
-        "yellow": "&H00FFFF",
-        "red": "&H0000FF",
-    }
-    primary_color = color_map.get(color, "&HFFFFFF")
-    
-    # Position: 2 = bottom (default), 8 = center
-    alignment = 2 if position == "bottom" else 8
-    
-    vf = (
-        f"subtitles={srt_path}:force_style='"
-        f"FontName=Arial Bold,"
-        f"FontSize={font_size},"
-        f"PrimaryColour={primary_color},"
-        f"OutlineColour=&H000000,"
-        f"BorderStyle=1,"
-        f"Outline=3,"
-        f"Shadow=2,"
-        f"Alignment={alignment},"
-        f"MarginV=80"
-        f"'"
-    )
-    
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-vf", vf,
-        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-        "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
-        "-movflags", "+faststart",
-        output_path
-    ]
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        # Fallback: copy without subtitles if burn fails
+    """Legacy wrapper — delegates to template system."""
+    tpl = _get_template("default")
+    ok = _burn_ass_styled(input_path, output_path, srt_path, tpl, 1080, 1920, crf, preset)
+    if not ok:
         subprocess.run(["cp", input_path, output_path], check=True)
 
 
-# ─── Burn simple caption ──────────────────────────────────────────────────────
-
 def _burn_simple_caption(input_path, output_path, caption_text, width, height, crf=20, preset="veryfast"):
-    """
-    Burn a simple caption overlay at the bottom of the video.
-    For more advanced subtitle timing, use separate subtitle file.
-    """
-    
-    # Wrap text for readability
-    max_chars = 32
-    wrapped = textwrap.fill(caption_text[:150], width=max_chars)
-    safe_text = _escape_ffmpeg_text(wrapped)
-
-    # Caption position — bottom third
-    y_pos = f"h*0.75"
-
-    vf = (
-        f"drawtext=text='{safe_text}'"
-        f":fontsize=48"
-        f":fontcolor=white"
-        f":bordercolor=black:borderw=3"
-        f":x=(w-tw)/2:y={y_pos}"
-        f":box=1:boxcolor=black@0.6:boxborderw=10"
-        f":line_spacing=6"
-    )
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-vf", vf,
-        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-        "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
-        "-movflags", "+faststart",
-        output_path
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        # Fallback: copy without caption if drawtext fails
+    """Legacy wrapper — delegates to template system."""
+    tpl = _get_template("default")
+    ok = _burn_drawtext(input_path, output_path, caption_text, tpl, width, height, crf, preset)
+    if not ok:
         subprocess.run(["cp", input_path, output_path], check=True)
 
 

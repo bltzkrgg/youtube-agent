@@ -169,6 +169,8 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
     preset: config.video.preset,
     audio_bitrate: config.video.audioBitrate,
     scale_flags: config.video.scaleFlags,
+    // Caption template
+    caption_template: config.caption.template,
     output_video: path.join(clipDir, 'final.mp4'),
     output_thumbnail: path.join(clipDir, 'thumbnail.jpg'),
     work_dir: clipDir,

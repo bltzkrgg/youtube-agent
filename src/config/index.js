@@ -113,6 +113,11 @@ const config = {
     scaleFlags:  process.env.VIDEO_SCALE_FLAGS           || 'lanczos',
   },
 
+  // Caption / subtitle
+  caption: {
+    template: (process.env.CAPTION_TEMPLATE || 'default').toLowerCase(),
+  },
+
   // Content
   content: {
     niche:    process.env.CONTENT_NICHE    || 'fakta unik indonesia',
