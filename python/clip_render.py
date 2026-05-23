@@ -75,6 +75,7 @@ def process_clip(cfg):
     audio_bitrate = str(cfg.get("audio_bitrate", "192k"))
     scale_flags = str(cfg.get("scale_flags", "lanczos"))
     caption_template = str(cfg.get("caption_template", "default")).lower()
+    enable_face_crop = bool(cfg.get("enable_face_crop", False))
 
     os.makedirs(work_dir, exist_ok=True)
 
@@ -89,7 +90,9 @@ def process_clip(cfg):
 
     # Step 2: Reframe to 9:16
     reframed_clip = os.path.join(work_dir, "reframed.mp4")
-    _reframe_clip(extracted_clip, reframed_clip, width, height, fps, reframe_strategy, reframe_details, crf, preset, scale_flags)
+    _reframe_clip(extracted_clip, reframed_clip, width, height, fps,
+                  reframe_strategy, reframe_details, crf, preset, scale_flags,
+                  enable_face_crop, source_video_path, start_sec, end_sec)
 
     # Step 3: Burn captions
     final_clip = _burn_captions(
@@ -146,35 +149,30 @@ def _extract_clip(source_path, start_sec, duration, output_path, crf=20, preset=
 
 # ─── Reframe to 9:16 ──────────────────────────────────────────────────────────
 
-def _reframe_clip(input_path, output_path, width, height, fps, strategy, reframe_details=None, crf=20, preset="veryfast", scale_flags="lanczos"):
+def _reframe_clip(input_path, output_path, width, height, fps, strategy,
+                  reframe_details=None, crf=20, preset="veryfast", scale_flags="lanczos",
+                  enable_face_crop=False, source_video_path=None, start_sec=0, end_sec=0):
     """
     Reframe video to 9:16 aspect ratio.
     Strategies:
-    - center: Simple center crop
-    - face_track: Track faces (requires face detection, fallback to center)
-    - action_follow: Follow motion (complex, fallback to center)
+    - center: Simple center crop (+ optional face-aware offset if ENABLE_FACE_CROP)
+    - face_track: Face-aware crop (falls back to center if no face found)
+    - action_follow: Follow motion (fallback to center)
     - zoom_in: Progressive zoom for emphasis
     - split_screen: Multiple subjects (fallback to center)
     """
-    
-    if strategy == "center":
-        vf = _center_crop_filter(width, height, fps, scale_flags)
-    elif strategy == "zoom_in":
+    # Determine crop X offset (center by default; face-aware if requested)
+    face_cx = None  # normalized [0,1] horizontal center of face region
+
+    use_face = enable_face_crop or strategy == "face_track"
+    if use_face and source_video_path:
+        face_cx = _detect_face_cx(source_video_path, start_sec, end_sec)
+
+    if strategy == "zoom_in":
         vf = _zoom_in_filter(width, height, fps, reframe_details, scale_flags)
-    elif strategy == "face_track":
-        # TODO: Implement face tracking with OpenCV
-        # For now, fallback to center
-        vf = _center_crop_filter(width, height, fps, scale_flags)
-    elif strategy == "action_follow":
-        # TODO: Implement motion tracking
-        # For now, fallback to center
-        vf = _center_crop_filter(width, height, fps, scale_flags)
-    elif strategy == "split_screen":
-        # TODO: Implement split screen
-        # For now, fallback to center
-        vf = _center_crop_filter(width, height, fps, scale_flags)
     else:
-        vf = _center_crop_filter(width, height, fps, scale_flags)
+        # center, face_track, action_follow, split_screen — all use crop filter
+        vf = _face_aware_crop_filter(width, height, fps, scale_flags, face_cx)
 
     cmd = [
         "ffmpeg", "-y",
@@ -192,13 +190,130 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy, reframe
         raise RuntimeError(f"FFmpeg reframe gagal: {result.stderr[-400:]}")
 
 
-def _center_crop_filter(width, height, fps, scale_flags="lanczos"):
-    """Scale to cover and center crop to target aspect ratio."""
+def _face_aware_crop_filter(width, height, fps, scale_flags="lanczos", face_cx=None):
+    """
+    Build crop filter. If face_cx (normalized [0,1]) is provided, shift the
+    horizontal crop to keep faces visible. Falls back to center crop if None.
+    """
+    if face_cx is not None:
+        # face_cx is in [0,1] relative to scaled frame.
+        # After scale-to-cover, the frame is at least `width` wide.
+        # We want the crop window to center on face_cx.
+        # Use FFmpeg expression: clamp(face_x - W/2, 0, iw - W)
+        # iw = scaled width after force_original_aspect_ratio=increase
+        # We approximate with a relative expression.
+        # Clamp so x offset doesn't go negative or exceed frame.
+        crop_x = f"max(0,min(iw-{width},iw*{face_cx:.4f}-{width//2}))"
+    else:
+        crop_x = f"(iw-{width})/2"
+
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
-        f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,"
+        f"crop={width}:{height}:{crop_x}:(ih-{height})/2,"
         f"fps={fps}"
     )
+
+
+def _center_crop_filter(width, height, fps, scale_flags="lanczos"):
+    """Scale to cover and center crop to target aspect ratio (legacy alias)."""
+    return _face_aware_crop_filter(width, height, fps, scale_flags, face_cx=None)
+
+
+# ─── Face detection (OpenCV, optional) ───────────────────────────────────────
+
+def _detect_face_cx(video_path, start_sec, end_sec):
+    """
+    Sample up to 5 frames from [start_sec, end_sec], run OpenCV Haar face
+    detection on each, and return the weighted-average normalized horizontal
+    center of all detected faces.
+
+    Returns float in [0, 1] or None if:
+    - OpenCV not installed
+    - no faces detected
+    - any exception
+    """
+    try:
+        import cv2  # noqa: F401 — optional dependency
+    except ImportError:
+        print(json.dumps({
+            "face_crop": "opencv_not_available",
+            "fallback": "center_crop",
+        }), flush=True)
+        return None
+
+    try:
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        if not os.path.exists(cascade_path):
+            print(json.dumps({
+                "face_crop": "haar_cascade_missing",
+                "fallback": "center_crop",
+            }), flush=True)
+            return None
+
+        detector = cv2.CascadeClassifier(cascade_path)
+
+        # Sample up to 5 evenly-spaced timestamps in the clip range
+        duration = max(1.0, end_sec - start_sec)
+        n_samples = min(5, max(1, int(duration / 3)))
+        sample_ts = [start_sec + duration * i / (n_samples - 1 if n_samples > 1 else 1)
+                     for i in range(n_samples)]
+
+        all_cx = []
+        cap = cv2.VideoCapture(video_path)
+
+        for ts in sample_ts:
+            cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000)
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                continue
+
+            h, w = frame.shape[:2]
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = detector.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=4,
+                minSize=(max(30, w // 20), max(30, h // 20)),
+            )
+
+            if len(faces) == 0:
+                continue
+
+            # Weighted by face area — larger faces count more
+            for (fx, fy, fw, fh) in faces:
+                face_cx_norm = (fx + fw / 2) / w
+                weight = fw * fh
+                all_cx.append((face_cx_norm, weight))
+
+        cap.release()
+
+        if not all_cx:
+            print(json.dumps({
+                "face_crop": "no_faces_detected",
+                "sampled_frames": n_samples,
+                "fallback": "center_crop",
+            }), flush=True)
+            return None
+
+        total_weight = sum(w for _, w in all_cx)
+        avg_cx = sum(cx * w for cx, w in all_cx) / total_weight
+
+        print(json.dumps({
+            "face_crop": "detected",
+            "face_count": len(all_cx),
+            "avg_cx": round(avg_cx, 4),
+            "sampled_frames": n_samples,
+        }), flush=True)
+
+        return avg_cx
+
+    except Exception as e:
+        print(json.dumps({
+            "face_crop": "error",
+            "error": str(e),
+            "fallback": "center_crop",
+        }), flush=True)
+        return None
 
 
 def _zoom_in_filter(width, height, fps, reframe_details, scale_flags="lanczos"):

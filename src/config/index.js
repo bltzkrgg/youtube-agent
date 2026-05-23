@@ -111,6 +111,8 @@ const config = {
     preset:      process.env.VIDEO_PRESET                || 'veryfast',
     audioBitrate: process.env.VIDEO_AUDIO_BITRATE        || '192k',
     scaleFlags:  process.env.VIDEO_SCALE_FLAGS           || 'lanczos',
+    // Face-aware crop (optional, default off for stability)
+    enableFaceCrop: process.env.ENABLE_FACE_CROP === 'true',
   },
 
   // Caption / subtitle
