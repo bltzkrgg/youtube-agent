@@ -87,6 +87,10 @@ const config = {
   // Clips per source hard cap (for testing / production cost control)
   maxClipsPerSource: Math.max(1, Math.min(10, parseInt(process.env.MAX_CLIPS_PER_SOURCE || '3', 10) || 3)),
 
+  // Clip boundary extension (sentence-aware padding)
+  clipEndPaddingSeconds:           parseFloat(process.env.CLIP_END_PADDING_SECONDS            || '0.35'),
+  clipEndSentenceExtensionSeconds: parseFloat(process.env.CLIP_END_SENTENCE_EXTENSION_SECONDS || '3.0'),
+
   // Timeouts (ms)
   timeouts: {
     research: parseInt(process.env.TIMEOUT_RESEARCH || '300000',  10),

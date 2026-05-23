@@ -310,6 +310,9 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
     // Ensure all required fields have valid values (never null for strings)
     enrichedClip = _normalizeClip(enrichedClip);
 
+    // Adjust clip end boundary to avoid mid-sentence cuts
+    enrichedClip = _adjustClipBoundary(enrichedClip, transcript, sourceIngest);
+
     enrichedClips.push(enrichedClip);
   }
 
@@ -630,6 +633,102 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
   }
 
   return output;
+}
+
+// ─── Clip boundary extension (sentence-aware) ────────────────────────────────
+
+const SENTENCE_END_RE = /[.!?…。！？]$/;
+
+/**
+ * Extend clip end_sec to avoid mid-sentence cuts.
+ *  1. Look for transcript segments that end after clip.end_sec but start before
+ *     clip.end_sec + CLIP_END_SENTENCE_EXTENSION_SECONDS.
+ *  2. If the segment whose end is just inside or near clip.end_sec doesn't end
+ *     with sentence-ending punctuation, extend to the next segment that does.
+ *  3. Always add CLIP_END_PADDING_SECONDS after the final position.
+ *  4. Cap at source duration and max clip duration (60s).
+ *  5. Never moves start_sec; never produces negative/zero duration.
+ *
+ * Falls back gracefully if transcript is unavailable.
+ */
+function _adjustClipBoundary(clip, transcript, sourceIngest) {
+  const padding  = config.clipEndPaddingSeconds;
+  const maxExt   = config.clipEndSentenceExtensionSeconds;
+  const sourceDur = sourceIngest?.source_duration || Infinity;
+  const maxDur   = 60; // hard cap matches schema
+  const maxEnd   = Math.min(sourceDur, clip.start_sec + maxDur);
+
+  const originalEndSec = clip.end_sec;
+
+  // Helper — clamp and rebuild clip
+  const finalize = (newEnd, reason) => {
+    const clamped = Math.min(newEnd, maxEnd);
+    if (clamped <= clip.start_sec) {
+      // Guard: never shrink to zero or negative
+      return clip;
+    }
+    if (Math.abs(clamped - originalEndSec) > 0.01) {
+      logger.info('Clip boundary adjusted', {
+        agent: AGENT,
+        clipId: clip.clip_id,
+        originalEndSec,
+        adjustedEndSec: parseFloat(clamped.toFixed(3)),
+        reason,
+      });
+    }
+    return {
+      ...clip,
+      end_sec: parseFloat(clamped.toFixed(3)),
+      duration_sec: parseFloat((clamped - clip.start_sec).toFixed(3)),
+    };
+  };
+
+  // No transcript — apply padding only
+  const segments = transcript?.segments;
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return finalize(originalEndSec + padding, 'padding_only');
+  }
+
+  // Find the last segment that starts before or at end_sec (the "active" segment)
+  const active = [...segments]
+    .filter(s => typeof s.start === 'number' && typeof s.end === 'number')
+    .reverse()
+    .find(s => s.start <= originalEndSec);
+
+  if (!active) {
+    return finalize(originalEndSec + padding, 'padding_only');
+  }
+
+  // If the active segment already ends with sentence punctuation and its end is
+  // within the extension window, snap to its end + padding
+  const activeText = (active.text || '').trim();
+  if (SENTENCE_END_RE.test(activeText)) {
+    // Snap to the segment's natural end if it's close to our clip end
+    const snapTarget = active.end + padding;
+    if (snapTarget <= maxEnd && active.end >= originalEndSec - 0.5) {
+      return finalize(snapTarget, 'sentence_end_snap');
+    }
+    // Otherwise just pad
+    return finalize(originalEndSec + padding, 'padding');
+  }
+
+  // Active segment didn't end with punctuation — look ahead for sentence boundary
+  const extensionWindow = originalEndSec + maxExt;
+  const lookahead = segments.filter(
+    s => typeof s.start === 'number' && typeof s.end === 'number'
+      && s.start > originalEndSec
+      && s.start <= extensionWindow
+  );
+
+  for (const seg of lookahead) {
+    const segText = (seg.text || '').trim();
+    if (SENTENCE_END_RE.test(segText)) {
+      return finalize(seg.end + padding, 'sentence_extension');
+    }
+  }
+
+  // No sentence boundary found in window — just add padding
+  return finalize(originalEndSec + padding, 'padding');
 }
 
 // ─── Heuristic fallback clip plans (no LLM required) ─────────────────────────
