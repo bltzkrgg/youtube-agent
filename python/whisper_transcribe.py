@@ -43,6 +43,16 @@ def transcribe(input_path: str, output_path: str, model_size: str = "base") -> d
                 }
                 for seg in result.get("segments", [])
             ],
+            # word-level timestamps if available (Whisper word_timestamps=True option)
+            "words": [
+                {
+                    "word": w.get("word", "").strip(),
+                    "start": round(w.get("start", 0), 3),
+                    "end": round(w.get("end", 0), 3),
+                }
+                for seg in result.get("segments", [])
+                for w in seg.get("words", [])
+            ],
         }
 
         # Write to output JSON

@@ -67,18 +67,33 @@ async function _processTranscript(sourceVideoId, correlationId) {
   // Validate source.mp4 before running Whisper — avoid infinite retry on corrupt file
   await _validateSourceVideo(sourceVideoId, videoPath);
 
-  // Extract mono 16kHz WAV for Whisper — more stable than feeding raw MP4
-  const audioPath = path.join(config.paths.output, sourceVideoId, 'audio_16k.wav');
-  const whisperInput = await _extractAudio(videoPath, audioPath, sourceVideoId);
+  // ── Check transcript cache before invoking Whisper ───────────────────────
+  const cachePath = path.join(config.paths.output, sourceVideoId, 'transcript_cache.json');
+  const cached = _loadTranscriptCache(cachePath, sourceVideoId);
+  let transcriptData;
 
-  logger.info('Melakukan transkripsi dengan Whisper', {
-    agent: AGENT, audioPath: whisperInput, usingExtractedAudio: whisperInput === audioPath,
-  });
+  if (cached) {
+    transcriptData = cached;
+    logger.info('Transcript cache loaded, skip Whisper', {
+      agent: AGENT, sourceVideoId, cachePath,
+    });
+  } else {
+    // Extract mono 16kHz WAV for Whisper — more stable than feeding raw MP4
+    const audioPath = path.join(config.paths.output, sourceVideoId, 'audio_16k.wav');
+    const whisperInput = await _extractAudio(videoPath, audioPath, sourceVideoId);
 
-  const transcriptData = await withRetry(
-    () => _runWhisper(whisperInput, sourceVideoId),
-    { maxRetry: config.maxRetry, agent: AGENT, step: 'whisperTranscribe' }
-  );
+    logger.info('Melakukan transkripsi dengan Whisper', {
+      agent: AGENT, audioPath: whisperInput, usingExtractedAudio: whisperInput === audioPath,
+    });
+
+    transcriptData = await withRetry(
+      () => _runWhisper(whisperInput, sourceVideoId),
+      { maxRetry: config.maxRetry, agent: AGENT, step: 'whisperTranscribe' }
+    );
+
+    // Persist transcript cache after successful Whisper run
+    _writeTranscriptCache(cachePath, transcriptData, sourceVideoId);
+  }
 
   const output = {
     source_video_id: sourceVideoId,
@@ -95,6 +110,81 @@ async function _processTranscript(sourceVideoId, correlationId) {
 
   writeVideoJson(sourceVideoId, 'transcript.json', data);
   return data;
+}
+
+// ─── Transcript cache helpers ────────────────────────────────────────────────
+
+const CACHE_VERSION = 1;
+
+/**
+ * Read and validate transcript_cache.json.
+ * Returns the cached transcript data (text + language + segments) on success,
+ * or null if the cache is missing, corrupt, or incompatible.
+ * Never throws — cache failures are non-fatal.
+ */
+function _loadTranscriptCache(cachePath, sourceVideoId) {
+  if (!fs.existsSync(cachePath)) return null;
+
+  try {
+    const raw = fs.readFileSync(cachePath, 'utf-8');
+    const cache = JSON.parse(raw);
+
+    // Minimal validity checks
+    if (
+      cache.version !== CACHE_VERSION ||
+      typeof cache.text !== 'string' ||
+      !Array.isArray(cache.segments) ||
+      cache.segments.length === 0
+    ) {
+      logger.warn('Transcript cache ignored (invalid structure)', {
+        agent: AGENT, sourceVideoId, cachePath,
+        hasText: typeof cache.text === 'string',
+        segCount: Array.isArray(cache.segments) ? cache.segments.length : -1,
+        cacheVersion: cache.version,
+      });
+      return null;
+    }
+
+    return {
+      text: cache.text,
+      language: cache.language || 'id',
+      segments: cache.segments,
+      words: Array.isArray(cache.words) ? cache.words : [],
+    };
+  } catch (e) {
+    logger.warn('Transcript cache ignored (parse error)', {
+      agent: AGENT, sourceVideoId, cachePath, error: e.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Write transcript_cache.json after a successful Whisper run.
+ * Non-fatal — if write fails, pipeline continues normally.
+ */
+function _writeTranscriptCache(cachePath, transcriptData, sourceVideoId) {
+  try {
+    const cache = {
+      version: CACHE_VERSION,
+      provider: 'whisper',
+      model: process.env.WHISPER_MODEL || 'base',
+      text: transcriptData.text,
+      language: transcriptData.language || 'id',
+      segments: transcriptData.segments,
+      words: Array.isArray(transcriptData.words) ? transcriptData.words : [],
+    };
+    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), 'utf-8');
+    logger.info('Transcript cache written', {
+      agent: AGENT, sourceVideoId, cachePath,
+      segCount: cache.segments.length,
+      wordCount: cache.words.length,
+    });
+  } catch (e) {
+    logger.warn('Gagal tulis transcript cache (non-fatal)', {
+      agent: AGENT, sourceVideoId, cachePath, error: e.message,
+    });
+  }
 }
 
 // ─── Validate source.mp4 before processing ───────────────────────────────────
