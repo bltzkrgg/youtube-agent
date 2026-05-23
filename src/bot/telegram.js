@@ -664,10 +664,15 @@ async function _handleTriggerClipperConfirm(chatId, url) {
     _clearPendingState(chatId);
   }
 
-  if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
+  // Normalize URL — rejects non-YouTube and missing-protocol URLs
+  let normalized;
+  try {
+    const { normalizeSourceUrl } = require('../agents/source_ingest');
+    normalized = normalizeSourceUrl(url || '');
+  } catch (e) {
     await _sendMessage(
       chatId,
-      '⚠️ URL harus berupa YouTube URL',
+      `⚠️ URL tidak valid: ${_escape(e.message)}\n\nKirim URL YouTube yang valid\\. Contoh:\n${_code('https://youtu.be/dQw4w9WgXcQ')}`,
       { parse_mode: 'MarkdownV2' }
     );
     return;
@@ -675,14 +680,14 @@ async function _handleTriggerClipperConfirm(chatId, url) {
 
   await _sendMessage(
     chatId,
-    `🔄 Memulai clipper pipeline untuk:\n${_escape(url)}`,
+    `🔄 Memulai clipper pipeline untuk:\n${_escape(normalized)}`,
     { parse_mode: 'MarkdownV2' }
   );
 
   try {
     const { triggerSourceIngest } = require('../agents/source_ingest');
 
-    await triggerSourceIngest(url);
+    await triggerSourceIngest(normalized);
 
     await _sendMessage(
       chatId,

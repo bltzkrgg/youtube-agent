@@ -15,6 +15,87 @@ const { validate, SourceIngestOutput } = require('../../schemas');
 
 const AGENT = 'SourceIngestAgent';
 
+// ─── URL normalization ────────────────────────────────────────────────────────
+
+const YOUTUBE_HOSTS = [
+  'youtube.com', 'www.youtube.com', 'm.youtube.com',
+  'youtu.be', 'www.youtu.be',
+];
+
+/**
+ * normalizeSourceUrl(input)
+ * - Trims whitespace
+ * - Extracts first URL-like token from text (e.g. copy-paste with surrounding text)
+ * - Prepends https:// if protocol missing for known YouTube domains
+ * - Validates with new URL()
+ * - Rejects non-YouTube domains
+ * Returns normalized URL string or throws Error with a clear reason.
+ */
+function normalizeSourceUrl(input) {
+  if (!input || typeof input !== 'string') {
+    throw new Error('source_url kosong atau bukan string');
+  }
+
+  // Try to extract the first URL-looking token from the input
+  const trimmed = input.trim();
+
+  // Attempt to pull a URL token: look for a word that contains '/' and looks like a URL
+  // Also handle plain domain patterns like "youtube.com/watch?v=xxx"
+  const tokens = trimmed.split(/\s+/);
+  let candidate = null;
+
+  for (const token of tokens) {
+    // Skip empty tokens
+    if (!token) continue;
+
+    let t = token;
+
+    // Prepend https:// if the token starts with a known YouTube domain
+    if (!t.includes('://')) {
+      const hasKnownDomain = YOUTUBE_HOSTS.some(h => t.toLowerCase().startsWith(h));
+      if (hasKnownDomain) {
+        t = 'https://' + t;
+      }
+    }
+
+    // Try to parse as URL
+    try {
+      const parsed = new URL(t);
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+      if (host === 'youtube.com' || host === 'youtu.be') {
+        candidate = parsed.href;
+        break;
+      }
+    } catch (_) {
+      // Not a valid URL token, continue
+    }
+  }
+
+  if (!candidate) {
+    // Last attempt: try the whole trimmed string with https:// prepended
+    let full = trimmed;
+    if (!full.includes('://')) {
+      const hasKnownDomain = YOUTUBE_HOSTS.some(h => full.toLowerCase().startsWith(h));
+      if (hasKnownDomain) full = 'https://' + full;
+    }
+    try {
+      const parsed = new URL(full);
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+      if (host === 'youtube.com' || host === 'youtu.be') {
+        candidate = parsed.href;
+      }
+    } catch (_) {
+      // fall through to error below
+    }
+  }
+
+  if (!candidate) {
+    throw new Error(`URL tidak valid atau bukan YouTube URL: "${input.slice(0, 100)}"`);
+  }
+
+  return candidate;
+}
+
 // ─── Main entry ──────────────────────────────────────────────────────────────
 
 async function runSourceIngestAgent() {
@@ -52,9 +133,27 @@ async function runSourceIngestAgent() {
 
 async function _processSourceIngest(job) {
   const correlationId = job.payload?.correlation_id || job.correlation_id;
-  const sourceUrl = job.payload?.source_url;
+  const rawSourceUrl = job.payload?.source_url;
 
-  if (!sourceUrl) throw new Error('source_url tidak ada di payload');
+  if (!rawSourceUrl) throw new Error('source_url tidak ada di payload');
+
+  // Normalize and validate source URL before any DB lookup or download
+  let sourceUrl;
+  try {
+    sourceUrl = normalizeSourceUrl(rawSourceUrl);
+  } catch (normErr) {
+    logger.error('source_url tidak valid, job dibatalkan', {
+      agent: AGENT, rawSourceUrl, reason: normErr.message,
+    });
+    // Throw permanent-style error so the job moves to dead-letter cleanly
+    const err = new Error(`source_url tidak valid: ${normErr.message}`);
+    err.permanent = true;
+    throw err;
+  }
+
+  if (rawSourceUrl !== sourceUrl) {
+    logger.info('source_url dinormalisasi', { agent: AGENT, rawSourceUrl, sourceUrl });
+  }
 
   // IDEMPOTENCY: Check if source URL already processed
   const { getDb, updateSourceVideo } = require('../../utils/db');
@@ -657,14 +756,15 @@ function _mockSourceIngest(sourceVideoId, correlationId, sourceUrl, videoDir) {
 // ─── Manual trigger ───────────────────────────────────────────────────────────
 
 async function triggerSourceIngest(sourceUrl) {
+  const normalized = normalizeSourceUrl(sourceUrl); // throws on invalid
   const correlationId = uuidv4();
-  pushJob('source_ingest', { source_url: sourceUrl, correlation_id: correlationId }, {
+  pushJob('source_ingest', { source_url: normalized, correlation_id: correlationId }, {
     correlationId,
     priority: 'high',
     timeoutMs: config.timeouts.default,
   });
-  logger.info('Source ingest job ditambahkan manual', { agent: AGENT, correlationId, sourceUrl });
+  logger.info('Source ingest job ditambahkan manual', { agent: AGENT, correlationId, sourceUrl: normalized });
   await runSourceIngestAgent();
 }
 
-module.exports = { runSourceIngestAgent, triggerSourceIngest };
+module.exports = { runSourceIngestAgent, triggerSourceIngest, normalizeSourceUrl };

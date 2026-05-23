@@ -504,6 +504,60 @@ console.log('✅ Database cleaned\n');
       console.log('✅ ClipPlanner heuristic fallback: PASSED');
     }
 
+    // STEP 14: Test URL normalization
+    console.log('\n🔗 STEP 14: Test URL normalization...');
+    {
+      const { normalizeSourceUrl } = require('../src/agents/source_ingest');
+
+      const cases = [
+        // [input, expectedToPass, description]
+        ['https://www.youtube.com/watch?v=dQw4w9WgXcQ', true,  'https:// full URL'],
+        ['https://youtu.be/dQw4w9WgXcQ',                true,  'youtu.be shortlink'],
+        ['https://m.youtube.com/watch?v=abc',           true,  'm.youtube.com mobile URL'],
+        ['youtube.com/watch?v=dQw4w9WgXcQ',             true,  'no protocol youtube.com'],
+        ['youtu.be/dQw4w9WgXcQ',                        true,  'no protocol youtu.be'],
+        ['  https://youtu.be/dQw4w9WgXcQ  ',            true,  'URL with whitespace'],
+        ['check this out https://youtu.be/dQw4w9WgXcQ ok', true, 'text containing URL'],
+        ['not a url',                                   false, 'invalid text'],
+        ['https://vimeo.com/123456',                    false, 'non-YouTube URL'],
+        ['',                                            false, 'empty string'],
+      ];
+
+      let passed = 0;
+      let failed = 0;
+      for (const [input, shouldPass, desc] of cases) {
+        let result;
+        let ok;
+        try {
+          result = normalizeSourceUrl(input);
+          ok = shouldPass;
+          if (!shouldPass) {
+            console.error(`  ❌ FAIL (${desc}): expected error but got "${result}"`);
+            failed++;
+            continue;
+          }
+          // Verify normalized URL passes new URL() and is https YouTube
+          const parsed = new URL(result);
+          if (!result.startsWith('https://')) throw new Error('not https');
+          const host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+          if (host !== 'youtube.com' && host !== 'youtu.be') throw new Error(`bad host: ${host}`);
+          console.log(`  ✅ (${desc}): "${result.slice(0, 60)}"`);
+          passed++;
+        } catch (e) {
+          if (shouldPass) {
+            console.error(`  ❌ FAIL (${desc}): unexpected error: ${e.message}`);
+            failed++;
+          } else {
+            console.log(`  ✅ (${desc}): correctly rejected — ${e.message.slice(0, 60)}`);
+            passed++;
+          }
+        }
+      }
+
+      if (failed > 0) throw new Error(`URL normalization: ${failed} test(s) failed`);
+      console.log(`✅ URL normalization: ${passed}/${cases.length} tests passed`);
+    }
+
     console.log('\n' + '='.repeat(60));
     console.log('✅ DRY-RUN E2E TEST PASSED');
     console.log('='.repeat(60));
@@ -515,6 +569,7 @@ console.log('✅ Database cleaned\n');
     console.log(`  - Invalid source.mp4: WORKING`);
     console.log(`  - Admin cleanup helpers: WORKING`);
     console.log(`  - LLM heuristic fallback: WORKING`);
+    console.log(`  - URL normalization: WORKING`);
     console.log(`  - Pipeline flow: COMPLETE\n`);
     
     process.exit(0);
