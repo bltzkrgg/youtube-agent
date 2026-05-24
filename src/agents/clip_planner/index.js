@@ -130,38 +130,58 @@ async function _processClipPlanner(sourceVideoId, correlationId) {
     clipPlans = _heuristicClipPlans(transcript, sceneDetect, sourceIngest);
   }
 
-  // Validate and sanitize clip plans
-  const validatedPlans = clipPlans.filter(plan => {
-    // Validate required fields
+  // Validate, repair, and sanitize clip plans
+  const sourceDuration = sourceIngest.source_duration || Infinity;
+  const transcriptSegments = transcript?.segments || [];
+
+  const validatedPlans = clipPlans.map(plan => {
+    // Must have numeric timestamps
     if (typeof plan.start_sec !== 'number' || typeof plan.end_sec !== 'number') {
       logger.warn('Clip plan missing start_sec/end_sec, skipped', { agent: AGENT, plan });
-      return false;
+      return null;
     }
-    
-    // Validate duration
-    const duration = plan.end_sec - plan.start_sec;
-    if (duration < 10 || duration > 60) {
-      logger.warn(`Clip duration ${duration}s out of range (10-60s), skipped`, { agent: AGENT, plan });
-      return false;
-    }
-    
-    // Validate score
+
+    // Normalize required string fields before repair
+    plan.hook_type        = plan.hook_type || 'unknown';
+    plan.caption_plan     = plan.caption_plan || 'Default caption';
+    plan.reframe_strategy = plan.reframe_strategy || 'center';
+    plan.risk_notes       = typeof plan.risk_notes === 'string' ? plan.risk_notes : '';
+
+    // Normalize score
     if (typeof plan.score !== 'number' || plan.score < 0 || plan.score > 100) {
-      logger.warn(`Invalid score ${plan.score}, defaulting to 50`, { agent: AGENT, plan });
       plan.score = 50;
     }
-    
-    // Ensure required string fields
-    plan.hook_type = plan.hook_type || 'unknown';
-    plan.caption_plan = plan.caption_plan || 'Default caption';
-    plan.reframe_strategy = plan.reframe_strategy || 'center';
-    plan.risk_notes = typeof plan.risk_notes === 'string' ? plan.risk_notes : '';
-    
-    return true;
-  });
+
+    // Repair duration before validation
+    plan = _repairClipDuration(plan, sourceDuration, transcriptSegments);
+
+    // Validate duration after repair
+    const duration = plan.end_sec - plan.start_sec;
+    if (duration < config.clip.minDuration || duration > config.clip.maxDuration) {
+      logger.warn(`Clip duration ${duration.toFixed(1)}s still out of range after repair, skipped`, { agent: AGENT, plan });
+      return null;
+    }
+
+    return plan;
+  }).filter(Boolean);
 
   if (validatedPlans.length === 0) {
-    throw new Error('Semua clip plans tidak valid setelah validasi');
+    if (!config.clipPlannerRequireLlm) {
+      logger.warn('Semua LLM clip plans tidak valid setelah repair, mencoba heuristik fallback', { agent: AGENT });
+      const fallbackPlans = _heuristicClipPlans(transcript, sceneDetect, sourceIngest);
+      const validFallback = fallbackPlans.filter(p =>
+        typeof p.start_sec === 'number' && typeof p.end_sec === 'number' &&
+        (p.end_sec - p.start_sec) >= config.clip.minDuration &&
+        (p.end_sec - p.start_sec) <= config.clip.maxDuration
+      );
+      if (validFallback.length > 0) {
+        logger.info(`Heuristic fallback: ${validFallback.length} valid clip(s)`, { agent: AGENT });
+        validatedPlans.push(...validFallback);
+      }
+    }
+    if (validatedPlans.length === 0) {
+      throw new Error('Semua clip plans tidak valid setelah validasi dan repair');
+    }
   }
 
   logger.info(`${validatedPlans.length} valid clips dari ${clipPlans.length} plans`, { agent: AGENT });
@@ -633,6 +653,104 @@ function _mockClipPlanner(sourceVideoId, correlationId) {
   }
 
   return output;
+}
+
+// ─── Clip duration repair ────────────────────────────────────────────────────
+
+/**
+ * Repair a clip that is too short or too long.
+ *
+ * Short clips: expand around the original midpoint to reach
+ *   max(config.clip.minDuration, config.clip.targetShortRepairSeconds).
+ *   Tries to align to nearby transcript segment boundaries.
+ *
+ * Long clips: trim end toward midpoint to reach config.clip.maxDuration.
+ *
+ * Always clamps 0 <= start_sec < end_sec <= sourceDuration.
+ * Returns the (possibly modified) plan. Never throws.
+ */
+function _repairClipDuration(plan, sourceDuration, transcriptSegments) {
+  const minDur    = config.clip.minDuration;
+  const maxDur    = config.clip.maxDuration;
+  const targetDur = Math.max(minDur, config.clip.targetShortRepairSeconds);
+  const safeSrcDur = Number.isFinite(sourceDuration) && sourceDuration > 0 ? sourceDuration : 3600;
+
+  const originalStart = plan.start_sec;
+  const originalEnd   = plan.end_sec;
+  const duration      = originalEnd - originalStart;
+
+  if (duration >= minDur && duration <= maxDur) return plan; // nothing to do
+
+  const mid = (originalStart + originalEnd) / 2;
+
+  let newStart = plan.start_sec;
+  let newEnd   = plan.end_sec;
+
+  // ── Too short ──────────────────────────────────────────────────────────────
+  if (duration < minDur) {
+    const half = targetDur / 2;
+    newStart = Math.max(0, mid - half);
+    newEnd   = Math.min(safeSrcDur, mid + half);
+
+    // If clamping shortened us again, expand the other side
+    const got = newEnd - newStart;
+    if (got < minDur) {
+      if (newStart === 0) {
+        newEnd = Math.min(safeSrcDur, minDur);
+      } else {
+        newStart = Math.max(0, newEnd - minDur);
+      }
+    }
+
+    // Snap to nearby transcript segment boundaries (within ±3s of our new edges)
+    if (Array.isArray(transcriptSegments) && transcriptSegments.length > 0) {
+      const SNAP_RADIUS = 3.0;
+
+      // Try to extend start backward to a segment boundary
+      const snapStart = transcriptSegments
+        .filter(s => typeof s.start === 'number' && s.start >= (newStart - SNAP_RADIUS) && s.start <= newStart)
+        .sort((a, b) => a.start - b.start)[0];
+      if (snapStart) newStart = Math.max(0, snapStart.start);
+
+      // Try to extend end forward to a segment boundary
+      const snapEnd = transcriptSegments
+        .filter(s => typeof s.end === 'number' && s.end >= newEnd && s.end <= (newEnd + SNAP_RADIUS))
+        .sort((a, b) => a.end - b.end)[0];
+      if (snapEnd) newEnd = Math.min(safeSrcDur, snapEnd.end);
+    }
+  }
+
+  // ── Too long ───────────────────────────────────────────────────────────────
+  if (duration > maxDur) {
+    const half = maxDur / 2;
+    newStart = Math.max(0, mid - half);
+    newEnd   = Math.min(safeSrcDur, mid + half);
+  }
+
+  // Final clamp + sanity
+  newStart = parseFloat(Math.max(0, newStart).toFixed(3));
+  newEnd   = parseFloat(Math.min(safeSrcDur, newEnd).toFixed(3));
+  if (newEnd <= newStart) newEnd = parseFloat(Math.min(safeSrcDur, newStart + minDur).toFixed(3));
+
+  const repairedDuration = parseFloat((newEnd - newStart).toFixed(3));
+
+  logger.info('Clip duration repaired', {
+    agent: AGENT,
+    clipHook: plan.hook_type,
+    originalStart, originalEnd,
+    originalDuration: parseFloat(duration.toFixed(3)),
+    repairedStart: newStart, repairedEnd: newEnd,
+    repairedDuration,
+    reason: duration < minDur ? 'short_duration_repair' : 'long_duration_trim',
+  });
+
+  return {
+    ...plan,
+    start_sec:   newStart,
+    end_sec:     newEnd,
+    duration_sec: repairedDuration,
+    repaired_short_duration: duration < minDur,
+  };
 }
 
 // ─── Clip boundary extension (sentence-aware) ────────────────────────────────

@@ -91,6 +91,13 @@ const config = {
   clipEndPaddingSeconds:           parseFloat(process.env.CLIP_END_PADDING_SECONDS            || '0.35'),
   clipEndSentenceExtensionSeconds: parseFloat(process.env.CLIP_END_SENTENCE_EXTENSION_SECONDS || '3.0'),
 
+  // Clip duration constraints and short-clip repair
+  clip: {
+    minDuration:             Math.max(1,  parseFloat(process.env.CLIP_MIN_DURATION_SECONDS          || '10')),
+    maxDuration:             Math.min(120, parseFloat(process.env.CLIP_MAX_DURATION_SECONDS          || '60')),
+    targetShortRepairSeconds: parseFloat(process.env.CLIP_TARGET_SHORT_REPAIR_SECONDS || '12'),
+  },
+
   // Timeouts (ms)
   timeouts: {
     research: parseInt(process.env.TIMEOUT_RESEARCH || '300000',  10),
