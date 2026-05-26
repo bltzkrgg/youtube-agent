@@ -218,7 +218,7 @@ def _face_aware_crop_filter(width, height, fps, scale_flags="lanczos", face_cx=N
 
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
-        f"crop={width}:{height}:{crop_x}:(ih-{height})/2,"
+        f"crop={width}:{height}:{crop_x}:(ih-{height})/2,setsar=1,"
         f"fps={fps}"
     )
 
