@@ -80,7 +80,7 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
   if (!sourceIngest) throw new Error(`source_ingest.json tidak ditemukan untuk ${sourceVideoId}`);
   if (!clipDb) throw new Error(`Clip ${clipId} tidak ditemukan di database`);
 
-  // IDEMPOTENCY: Skip if already rendered or in review/approved
+  /* IDEMPOTENCY: Skip if already rendered or in review/approved
   if (
     clipDb.status === 'rendered' ||
     clipDb.status === 'pending_review' ||
@@ -102,7 +102,7 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
       status: clipDb.status,
       skipped: true,
     };
-  }
+  } */
 
   // PERMISSION GATE: Check if source video allowed to clip
   const { getSourceVideo } = require('../../utils/db');
