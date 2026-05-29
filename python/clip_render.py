@@ -189,6 +189,7 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy,
         "-vf", vf,
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
         "-pix_fmt", "yuv420p",
+        "-aspect", f"{width}:{height}",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_path
@@ -332,7 +333,7 @@ def _zoom_in_filter(width, height, fps, reframe_details, scale_flags="lanczos"):
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
         f"zoompan=z='min(zoom+0.0005,{zoom_end})':d=1:s={width}x{height}:fps={fps},"
-        f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2"
+        f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,setsar=1"
     )
 
 
@@ -551,6 +552,7 @@ def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf,
             "-vf", vf,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p",
+            "-aspect", f"{width}:{height}",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_path,
@@ -578,6 +580,7 @@ def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf,
             "-vf", vf_srt,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p",
+            "-aspect", f"{width}:{height}",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_path,
@@ -617,6 +620,7 @@ def _burn_drawtext(input_path, output_path, caption_text, tpl, width, height, cr
             "-vf", vf,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p",
+            "-aspect", f"{width}:{height}",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_path,
