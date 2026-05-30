@@ -174,8 +174,10 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy,
     face_cx = None  # normalized [0,1] horizontal center of face region
 
     use_face = enable_face_crop or strategy == "face_track"
-    if use_face and source_video_path:
-        face_cx = _detect_face_cx(source_video_path, start_sec, end_sec)
+    if use_face:
+        # Gunakan input_path (klip pendek) yang frame-nya jauh lebih akurat untuk OpenCV
+        clip_duration = end_sec - start_sec
+        face_cx = _detect_face_cx(input_path, 0, clip_duration)
 
     if strategy == "zoom_in":
         vf = _zoom_in_filter(width, height, fps, reframe_details, scale_flags)
@@ -231,30 +233,15 @@ def _center_crop_filter(width, height, fps, scale_flags="lanczos"):
 # ─── Face detection (OpenCV, optional) ───────────────────────────────────────
 
 def _detect_face_cx(video_path, start_sec, end_sec):
-    """
-    Sample up to 8 frames from [start_sec, end_sec], run MediaPipe Pose
-    detection on each to locate the subject's horizontal center (average of
-    nose + left shoulder + right shoulder landmarks).
-
-    Returns float in [0, 1] or None if:
-    - mediapipe not installed
-    - no pose/landmarks detected
-    - any exception
-    """
     try:
-        import mediapipe as mp  # noqa: F401 — optional dependency
+        import mediapipe as mp
         import cv2
     except ImportError:
-        print(json.dumps({
-            "face_crop": "mediapipe_not_available",
-            "fallback": "center_crop",
-        }), flush=True)
+        print(json.dumps({"face_crop": "mediapipe_not_available", "fallback": "center_crop"}), flush=True)
         return None
 
     try:
-        mp_pose = mp.solutions.pose
-
-        # Sample up to 8 evenly-spaced timestamps in the clip range
+        mp_face = mp.solutions.face_detection
         duration = max(1.0, end_sec - start_sec)
         n_samples = min(8, max(1, int(duration / 2)))
         sample_ts = [start_sec + duration * i / (n_samples - 1 if n_samples > 1 else 1)
@@ -263,69 +250,51 @@ def _detect_face_cx(video_path, start_sec, end_sec):
         all_cx = []
         cap = cv2.VideoCapture(video_path)
 
-        with mp_pose.Pose(
-            static_image_mode=True,
-            model_complexity=1,
-            enable_segmentation=False,
-            min_detection_confidence=0.4,
-        ) as pose:
+        with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.4) as face_detection:
             for ts in sample_ts:
                 cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000)
                 ret, frame = cap.read()
                 if not ret or frame is None:
                     continue
 
-                # MediaPipe expects RGB
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = pose.process(frame_rgb)
+                results = face_detection.process(frame_rgb)
 
-                if not results.pose_landmarks:
+                if not results.detections:
                     continue
 
-                lm = results.pose_landmarks.landmark
-                # Use nose (0), left shoulder (11), right shoulder (12)
-                # to find the horizontal center of the subject
-                key_indices = [
-                    mp_pose.PoseLandmark.NOSE,
-                    mp_pose.PoseLandmark.LEFT_SHOULDER,
-                    mp_pose.PoseLandmark.RIGHT_SHOULDER,
-                ]
-                xs = [lm[idx].x for idx in key_indices if lm[idx].visibility > 0.3]
+                # Cari wajah terbesar (pembicara utama)
+                best_cx = None
+                max_area = 0
+                for detection in results.detections:
+                    bbox = detection.location_data.relative_bounding_box
+                    area = bbox.width * bbox.height
+                    if area > max_area:
+                        max_area = area
+                        # Pusat wajah horizontal (x awal + setengah lebar)
+                        best_cx = bbox.xmin + (bbox.width / 2)
 
-                if not xs:
-                    continue
-
-                cx = sum(xs) / len(xs)
-                all_cx.append(cx)
+                if best_cx is not None:
+                    all_cx.append(best_cx)
 
         cap.release()
 
         if not all_cx:
-            print(json.dumps({
-                "face_crop": "no_pose_detected",
-                "sampled_frames": n_samples,
-                "fallback": "center_crop",
-            }), flush=True)
+            print(json.dumps({"face_crop": "no_face_detected", "sampled_frames": n_samples, "fallback": "center_crop"}), flush=True)
             return None
 
         avg_cx = sum(all_cx) / len(all_cx)
-
         print(json.dumps({
             "face_crop": "detected",
-            "method": "mediapipe_pose",
-            "pose_count": len(all_cx),
+            "method": "mediapipe_face",
+            "face_count_frames": len(all_cx),
             "avg_cx": round(avg_cx, 4),
             "sampled_frames": n_samples,
         }), flush=True)
-
         return avg_cx
 
     except Exception as e:
-        print(json.dumps({
-            "face_crop": "error",
-            "error": str(e),
-            "fallback": "center_crop",
-        }), flush=True)
+        print(json.dumps({"face_crop": "error", "error": str(e), "fallback": "center_crop"}), flush=True)
         return None
 
 
