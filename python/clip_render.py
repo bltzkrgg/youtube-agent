@@ -191,6 +191,7 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy,
         "-vf", vf,
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
         "-pix_fmt", "yuv420p",
+        "-aspect", f"{width}:{height}",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_path
@@ -220,7 +221,7 @@ def _face_aware_crop_filter(width, height, fps, scale_flags="lanczos", face_cx=N
 
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
-        f"crop={width}:{height}:{crop_x}:(ih-{height})/2,setsar=1,setdar={width}/{height},"
+        f"crop={width}:{height}:{crop_x}:(ih-{height})/2,setsar=1,"
         f"fps={fps}"
     )
 
@@ -305,7 +306,7 @@ def _zoom_in_filter(width, height, fps, reframe_details, scale_flags="lanczos"):
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
         f"zoompan=z='min(zoom+0.0005,{zoom_end})':d=1:s={width}x{height}:fps={fps},"
-        f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,setsar=1,setdar={width}/{height}"
+        f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,setsar=1"
     )
 
 
@@ -517,13 +518,14 @@ def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf,
         with open(ass_path, "w", encoding="utf-8") as f:
             f.write(ass_content)
 
-        vf = f"ass={ass_path},setsar=1,setdar={width}/{height}"
+        vf = f"ass={ass_path},setsar=1"
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
             "-vf", vf,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p",
+            "-aspect", f"{width}:{height}",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_path,
@@ -543,7 +545,7 @@ def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf,
             f"Shadow={tpl['shadow']},"
             f"Alignment={tpl['alignment']},"
             f"MarginV={max(20, int(height * tpl['margin_v_ratio']))}"
-            f"',setsar=1,setdar={width}/{height}"
+            f"',setsar=1"
         )
         cmd2 = [
             "ffmpeg", "-y",
@@ -551,6 +553,7 @@ def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf,
             "-vf", vf_srt,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p",
+            "-aspect", f"{width}:{height}",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_path,
@@ -582,7 +585,7 @@ def _burn_drawtext(input_path, output_path, caption_text, tpl, width, height, cr
             f":x=(w-tw)/2:y={y_pos}"
             f":box=1:boxcolor=black@0.6:boxborderw=8"
             f":line_spacing=4,"
-            f"setsar=1,setdar={width}/{height}"
+            f"setsar=1"
         )
 
         cmd = [
@@ -591,6 +594,7 @@ def _burn_drawtext(input_path, output_path, caption_text, tpl, width, height, cr
             "-vf", vf,
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p",
+            "-aspect", f"{width}:{height}",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_path,
