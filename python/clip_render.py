@@ -233,84 +233,88 @@ def _center_crop_filter(width, height, fps, scale_flags="lanczos"):
 
 def _detect_face_cx(video_path, start_sec, end_sec):
     """
-    Sample up to 5 frames from [start_sec, end_sec], run OpenCV Haar face
-    detection on each, and return the weighted-average normalized horizontal
-    center of all detected faces.
+    Sample up to 8 frames from [start_sec, end_sec], run MediaPipe Pose
+    detection on each to locate the subject's horizontal center (average of
+    nose + left shoulder + right shoulder landmarks).
 
     Returns float in [0, 1] or None if:
-    - OpenCV not installed
-    - no faces detected
+    - mediapipe not installed
+    - no pose/landmarks detected
     - any exception
     """
     try:
-        import cv2  # noqa: F401 — optional dependency
+        import mediapipe as mp  # noqa: F401 — optional dependency
+        import cv2
     except ImportError:
         print(json.dumps({
-            "face_crop": "opencv_not_available",
+            "face_crop": "mediapipe_not_available",
             "fallback": "center_crop",
         }), flush=True)
         return None
 
     try:
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        if not os.path.exists(cascade_path):
-            print(json.dumps({
-                "face_crop": "haar_cascade_missing",
-                "fallback": "center_crop",
-            }), flush=True)
-            return None
+        mp_pose = mp.solutions.pose
 
-        detector = cv2.CascadeClassifier(cascade_path)
-
-        # Sample up to 5 evenly-spaced timestamps in the clip range
+        # Sample up to 8 evenly-spaced timestamps in the clip range
         duration = max(1.0, end_sec - start_sec)
-        n_samples = min(5, max(1, int(duration / 3)))
+        n_samples = min(8, max(1, int(duration / 2)))
         sample_ts = [start_sec + duration * i / (n_samples - 1 if n_samples > 1 else 1)
                      for i in range(n_samples)]
 
         all_cx = []
         cap = cv2.VideoCapture(video_path)
 
-        for ts in sample_ts:
-            cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000)
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                continue
+        with mp_pose.Pose(
+            static_image_mode=True,
+            model_complexity=1,
+            enable_segmentation=False,
+            min_detection_confidence=0.4,
+        ) as pose:
+            for ts in sample_ts:
+                cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000)
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    continue
 
-            h, w = frame.shape[:2]
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = detector.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=4,
-                minSize=(max(30, w // 20), max(30, h // 20)),
-            )
+                # MediaPipe expects RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = pose.process(frame_rgb)
 
-            if len(faces) == 0:
-                continue
+                if not results.pose_landmarks:
+                    continue
 
-            # Weighted by face area — larger faces count more
-            for (fx, fy, fw, fh) in faces:
-                face_cx_norm = (fx + fw / 2) / w
-                weight = fw * fh
-                all_cx.append((face_cx_norm, weight))
+                lm = results.pose_landmarks.landmark
+                # Use nose (0), left shoulder (11), right shoulder (12)
+                # to find the horizontal center of the subject
+                key_indices = [
+                    mp_pose.PoseLandmark.NOSE,
+                    mp_pose.PoseLandmark.LEFT_SHOULDER,
+                    mp_pose.PoseLandmark.RIGHT_SHOULDER,
+                ]
+                xs = [lm[idx].x for idx in key_indices if lm[idx].visibility > 0.3]
+
+                if not xs:
+                    continue
+
+                cx = sum(xs) / len(xs)
+                all_cx.append(cx)
 
         cap.release()
 
         if not all_cx:
             print(json.dumps({
-                "face_crop": "no_faces_detected",
+                "face_crop": "no_pose_detected",
                 "sampled_frames": n_samples,
                 "fallback": "center_crop",
             }), flush=True)
             return None
 
-        total_weight = sum(w for _, w in all_cx)
-        avg_cx = sum(cx * w for cx, w in all_cx) / total_weight
+        avg_cx = sum(all_cx) / len(all_cx)
 
         print(json.dumps({
             "face_crop": "detected",
-            "face_count": len(all_cx),
+            "method": "mediapipe_pose",
+            "pose_count": len(all_cx),
             "avg_cx": round(avg_cx, 4),
             "sampled_frames": n_samples,
         }), flush=True)

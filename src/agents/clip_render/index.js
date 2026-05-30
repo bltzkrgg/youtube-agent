@@ -171,8 +171,8 @@ async function _processClipRender(clipId, sourceVideoId, correlationId) {
     scale_flags: config.video.scaleFlags,
     // Caption template
     caption_template: config.caption.template,
-    // Face-aware crop
-    enable_face_crop: config.video.enableFaceCrop,
+    // Face-aware crop — hardcoded true: MediaPipe pose tracking always active
+    enable_face_crop: true,
     output_video: path.join(clipDir, 'final.mp4'),
     output_thumbnail: path.join(clipDir, 'thumbnail.jpg'),
     work_dir: clipDir,

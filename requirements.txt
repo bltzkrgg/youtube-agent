@@ -4,4 +4,4 @@ numpy>=1.26.4
 requests>=2.31.0
 openai-whisper>=20231117
 scenedetect[opencv]>=0.6.2
-yt-dlp>=2023.12.30
+mediapipe>=0.10.0
