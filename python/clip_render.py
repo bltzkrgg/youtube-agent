@@ -86,6 +86,13 @@ def process_clip(cfg):
     caption_template = str(cfg.get("caption_template", "default")).lower()
     enable_face_crop = bool(cfg.get("enable_face_crop", False))
 
+    # New visual polish options (audit #1.3, #1.4, #1.6 — ported from errnex/auto-clip)
+    enable_ken_burns = _cfg_bool(cfg, "enable_ken_burns", "ENABLE_KEN_BURNS", default=False)
+    enable_auto_editor = _cfg_bool(cfg, "enable_auto_editor", "ENABLE_AUTO_EDITOR", default=False)
+    enable_intro_text = _cfg_bool(cfg, "enable_intro_text", "ENABLE_INTRO_TEXT", default=True)
+    intro_duration = _cfg_float(cfg, "intro_text_duration", "INTRO_TEXT_DURATION", default=2.6)
+    intro_text_cfg = _resolve_intro_text(cfg, caption_plan, enable_intro_text)
+
     os.makedirs(work_dir, exist_ok=True)
 
     duration = end_sec - start_sec
@@ -97,15 +104,24 @@ def process_clip(cfg):
     extracted_clip = os.path.join(work_dir, "extracted.mp4")
     _extract_clip(source_video_path, start_sec, duration, extracted_clip, crf, preset, audio_bitrate)
 
-    # Step 2: Reframe to 9:16
+    # Step 2: Reframe to 9:16 (Ken Burns applies here if enabled)
     reframed_clip = os.path.join(work_dir, "reframed.mp4")
     _reframe_clip(extracted_clip, reframed_clip, width, height, fps,
                   reframe_strategy, reframe_details, crf, preset, scale_flags,
-                  enable_face_crop, source_video_path, start_sec, end_sec)
+                  enable_face_crop, source_video_path, start_sec, end_sec,
+                  ken_burns=enable_ken_burns)
 
-    # Step 3: Burn captions
+    # Step 2.5 (audit #1.4): Burn intro text overlay (first intro_duration seconds)
+    source_for_captions = reframed_clip
+    if enable_intro_text and intro_text_cfg:
+        with_intro = os.path.join(work_dir, "with_intro.mp4")
+        if _burn_intro_text(reframed_clip, with_intro, intro_text_cfg,
+                            width, height, crf, preset, duration=intro_duration):
+            source_for_captions = with_intro
+
+    # Step 3: Burn captions (audit #1.5: first-words highlight from emphasis_words)
     final_clip = _burn_captions(
-        reframed_clip,
+        source_for_captions,
         work_dir,
         captions_data,
         caption_plan,
@@ -113,6 +129,12 @@ def process_clip(cfg):
         crf, preset,
         caption_template,
     )
+
+    # Step 3.5 (audit #1.3): Run auto-editor jump cut silence removal
+    if enable_auto_editor:
+        ae_clip = os.path.join(work_dir, "after_auto_editor.mp4")
+        if _run_auto_editor(final_clip, ae_clip, enabled=True):
+            final_clip = ae_clip
 
     # Step 4: Copy to final output
     if final_clip != output_video:
@@ -132,7 +154,59 @@ def process_clip(cfg):
         "duration_sec": actual_duration,
         "width": width,
         "height": height,
+        "ken_burns": enable_ken_burns,
+        "auto_editor": enable_auto_editor,
+        "intro_text": bool(intro_text_cfg),
     }
+
+
+# ─── Config helpers (used by process_clip) ────────────────────────────────────
+
+def _cfg_bool(cfg, key, env_key, default=False):
+    """Read boolean from cfg first, then env, then default. Accepts '1','true','yes' as truthy."""
+    if key in cfg and cfg[key] is not None:
+        if isinstance(cfg[key], bool):
+            return cfg[key]
+        return str(cfg[key]).strip().lower() in ("1", "true", "yes", "on")
+    raw = os.environ.get(env_key, "")
+    if raw:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def _cfg_float(cfg, key, env_key, default):
+    """Read float from cfg first, then env, then default. Clamps to sane range."""
+    raw = None
+    if key in cfg and cfg[key] is not None:
+        raw = cfg[key]
+    elif os.environ.get(env_key):
+        raw = os.environ.get(env_key)
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not (0.5 <= val <= 10.0):
+        return default
+    return val
+
+
+def _resolve_intro_text(cfg, caption_plan, enable_intro_text):
+    """Pick the intro text from cfg or fall back to caption_plan / title if short."""
+    if not enable_intro_text:
+        return ""
+    explicit = cfg.get("intro_text", "")
+    if explicit and str(explicit).strip():
+        return str(explicit)
+    # Fallback: caption_plan (only if it's a real hook, not a long strategy description)
+    if caption_plan and isinstance(caption_plan, str):
+        cp = caption_plan.strip()
+        if cp and 0 < len(cp) <= 80 and cp.lower() not in ("none", "no caption", "default caption"):
+            return cp
+    # Last resort: title
+    title = cfg.get("title", "")
+    if title and 0 < len(str(title)) <= 80:
+        return str(title)
+    return ""
 
 
 # ─── Extract clip from source ────────────────────────────────────────────────
@@ -160,7 +234,8 @@ def _extract_clip(source_path, start_sec, duration, output_path, crf=20, preset=
 
 def _reframe_clip(input_path, output_path, width, height, fps, strategy,
                   reframe_details=None, crf=20, preset="veryfast", scale_flags="lanczos",
-                  enable_face_crop=False, source_video_path=None, start_sec=0, end_sec=0):
+                  enable_face_crop=False, source_video_path=None, start_sec=0, end_sec=0,
+                  ken_burns=False):
     """
     Reframe video to 9:16 aspect ratio.
     Strategies:
@@ -169,6 +244,9 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy,
     - action_follow: Follow motion (fallback to center)
     - zoom_in: Progressive zoom for emphasis
     - split_screen: Multiple subjects (fallback to center)
+
+    ken_burns: when True, applies a subtle continuous sinusoidal zoom (port from
+    errnex/auto-clip's render_vertical_clip filter chain). Independent of strategy.
     """
     # Determine crop X offset (center by default; face-aware if requested)
     face_cx = None  # normalized [0,1] horizontal center of face region
@@ -183,7 +261,7 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy,
         vf = _zoom_in_filter(width, height, fps, reframe_details, scale_flags)
     else:
         # center, face_track, action_follow, split_screen — all use crop filter
-        vf = _face_aware_crop_filter(width, height, fps, scale_flags, face_cx)
+        vf = _face_aware_crop_filter(width, height, fps, scale_flags, face_cx, ken_burns=ken_burns)
 
     cmd = [
         "ffmpeg", "-y",
@@ -202,11 +280,24 @@ def _reframe_clip(input_path, output_path, width, height, fps, strategy,
         raise RuntimeError(f"FFmpeg reframe gagal: {result.stderr[-400:]}")
 
 
-def _face_aware_crop_filter(width, height, fps, scale_flags="lanczos", face_cx=None):
+def _face_aware_crop_filter(width, height, fps, scale_flags="lanczos", face_cx=None, ken_burns=False):
     """
     Build crop filter. If face_cx (normalized [0,1]) is provided, shift the
     horizontal crop to keep faces visible. Falls back to center crop if None.
+
+    If ken_burns is True, use the auto-clip style filter chain: scale-to-cover
+    + zoompan with subtle sinusoidal motion (z='1.018+0.018*sin(on/45)').
+    Ignores face_cx because the zoompan handles cropping via its x/y expressions.
     """
+    if ken_burns:
+        # Subtle continuous zoom — ported from errnex/auto-clip src/effects.py
+        return (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scale_flags},"
+            f"zoompan=z='1.018+0.018*sin(on/45)':d=1:s={width}x{height}:fps={fps},"
+            f"setsar=1,"
+            f"fps={fps}"
+        )
+
     if face_cx is not None:
         # face_cx is in [0,1] relative to scaled frame.
         # After scale-to-cover, the frame is at least `width` wide.
@@ -386,8 +477,10 @@ def _burn_captions(input_path, work_dir, captions_data, caption_plan,
                     "srt_path": srt_path,
                 }), flush=True)
 
+                emphasis_words = captions_data.get("emphasis_words", []) if isinstance(captions_data, dict) else []
                 ok = _burn_ass_styled(input_path, captioned_clip, srt_path,
-                                      tpl, width, height, crf, preset)
+                                      tpl, width, height, crf, preset,
+                                      emphasis_words=emphasis_words)
                 if ok:
                     return captioned_clip
                 # SRT burn failed — fall through to drawtext
@@ -467,8 +560,15 @@ def _srt_time_to_ass(srt_ts):
         return "0:00:00.00"
 
 
-def _srt_to_ass_events(srt_content, max_chars):
-    """Parse SRT and emit ASS Dialogue lines, wrapping long lines."""
+def _srt_to_ass_events(srt_content, max_chars, emphasis_words=None):
+    """Parse SRT and emit ASS Dialogue lines, wrapping long lines.
+
+    If emphasis_words is provided, the FIRST matching word per line is wrapped
+    with an ASS color override (yellow) for visual punch — ported from
+    errnex/auto-clip src/subtitle.py:_highlight_first_words.
+    """
+    emphasis_lower = [w.lower() for w in (emphasis_words or []) if isinstance(w, str)]
+
     lines = []
     blocks = srt_content.strip().split("\n\n")
     for block in blocks:
@@ -491,20 +591,51 @@ def _srt_to_ass_events(srt_content, max_chars):
         # Wrap to max_chars per line (use ASS \N line break)
         wrapped = textwrap.fill(raw_text, width=max_chars)
         ass_text = wrapped.replace("\n", "\\N")
+
+        if emphasis_lower:
+            ass_text = _highlight_emphasis_words(ass_text, emphasis_lower)
+
         lines.append(
             f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{ass_text}"
         )
     return "\n".join(lines)
 
 
-def _build_ass_file(srt_content, tpl, width, height):
+def _highlight_emphasis_words(text, emphasis_lower):
+    """Wrap the FIRST matching emphasis word per line with ASS color override.
+
+    text is a string with \\N separating lines (ASS line breaks).
+    Returns the modified text. The yellow override is `\\c&H0000FFFF&` and the
+    reset to white is `\\c&H00FFFFFF&` (matches the default template primary colour).
+    """
+    if not text or not emphasis_lower:
+        return text
+
+    parts = text.split("\\N")
+    out = []
+    for part in parts:
+        words = part.split()
+        found = False
+        new_words = []
+        for w in words:
+            clean_w = re.sub(r"[^\w]", "", w.lower())
+            if not found and clean_w and clean_w in emphasis_lower:
+                new_words.append(r"{\c&H0000FFFF&}" + w + r"{\c&H00FFFFFF&}")
+                found = True
+            else:
+                new_words.append(w)
+        out.append(" ".join(new_words))
+    return "\\N".join(out)
+
+
+def _build_ass_file(srt_content, tpl, width, height, emphasis_words=None):
     """Build a complete .ass file string from SRT content and template."""
     header = _build_ass_style(tpl, width, height)
-    events = _srt_to_ass_events(srt_content, tpl["max_chars"])
+    events = _srt_to_ass_events(srt_content, tpl["max_chars"], emphasis_words)
     return header + events + "\n"
 
 
-def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf, preset):
+def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf, preset, emphasis_words=None):
     """Burn subtitles from SRT using ASS template. Returns True on success."""
     try:
         with open(srt_path, encoding="utf-8") as f:
@@ -514,7 +645,7 @@ def _burn_ass_styled(input_path, output_path, srt_path, tpl, width, height, crf,
             return False
 
         ass_path = srt_path.replace(".srt", ".ass")
-        ass_content = _build_ass_file(srt_content, tpl, width, height)
+        ass_content = _build_ass_file(srt_content, tpl, width, height, emphasis_words)
         with open(ass_path, "w", encoding="utf-8") as f:
             f.write(ass_content)
 
@@ -737,6 +868,145 @@ def _get_duration(path):
         return round(float(result.stdout.strip()), 2)
     except Exception:
         return 0.0
+
+
+# ─── Intro text overlay (port of errnex/auto-clip src/effects.py:render_vertical_clip) ──
+
+def _find_font():
+    """Cross-platform font discovery for FFmpeg drawtext.
+
+    Returns a path string if any candidate exists, else None. FFmpeg's
+    default font (when no fontfile is set) is platform-dependent and
+    often missing on minimal Linux installs — explicit fontfile avoids
+    silent fallback to a non-existent font.
+    """
+    candidates = [
+        # Linux (Debian/Ubuntu paths)
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        # Linux (Arch)
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        # macOS
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Library/Fonts/Arial.ttf",
+        # Windows
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _burn_intro_text(input_path, output_path, intro_text, width, height, crf, preset, duration=2.6):
+    """Burn a short hook text overlay for the first `duration` seconds of a clip.
+
+    Returns True on success, False on failure (caller should fall back to the
+    input clip unchanged). Mirrors the drawtext branch in
+    errnex/auto-clip src/effects.py:render_vertical_clip.
+    """
+    if not intro_text or not str(intro_text).strip():
+        return False
+
+    safe_text = _escape_ffmpeg_text(str(intro_text)[:100])
+    font_size = max(40, int(width * 0.06))
+    y_pos = int(height * 0.15)  # 15% from top
+
+    font_path = _find_font()
+    drawtext_options = [f"text='{safe_text}'"]
+    if font_path:
+        drawtext_options.append(f"fontfile='{_escape_ffmpeg_text(font_path)}'")
+    drawtext_options.extend([
+        "fontcolor=white",
+        f"fontsize={font_size}",
+        "borderw=4",
+        "bordercolor=black",
+        "x=(w-text_w)/2",
+        f"y={y_pos}",
+        "box=1:boxcolor=black@0.5:boxborderw=10",
+        f"enable='between(t,0,{duration})'",
+    ])
+
+    vf = "drawtext=" + ":".join(drawtext_options) + ",setsar=1"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        "-aspect", f"{width}:{height}",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not os.path.exists(output_path):
+        print(json.dumps({
+            "intro_text": "failed",
+            "error": result.stderr[-300:] if result.stderr else "ffmpeg non-zero exit",
+            "fallback": "passthrough",
+        }), flush=True)
+        return False
+
+    print(json.dumps({
+        "intro_text": "burned",
+        "duration": duration,
+        "text_length": len(intro_text),
+    }), flush=True)
+    return True
+
+
+# ─── Auto-Editor jump cut silence (port of errnex/auto-clip src/effects.py:run_auto_editor) ──
+
+def _run_auto_editor(input_path, output_path, enabled=True):
+    """Remove silent gaps using the auto-editor CLI. Returns True on success.
+
+    Graceful fallback: if auto-editor is not on PATH, the command fails, or
+    the output file is missing, this returns False and the caller should
+    use the input clip unchanged. Mirrors
+    errnex/auto-clip src/effects.py:run_auto_editor.
+    """
+    import shutil
+
+    if not enabled:
+        return False
+
+    if not shutil.which("auto-editor"):
+        print(json.dumps({
+            "auto_editor": "not_in_path",
+            "fallback": "passthrough",
+        }), flush=True)
+        return False
+
+    print(json.dumps({"auto_editor": "running"}), flush=True)
+    result = subprocess.run(
+        [
+            "auto-editor", str(input_path),
+            "--output", str(output_path),
+            "--margin", "0.2sec",
+            "--no-open",
+        ],
+        capture_output=True, text=True,
+    )
+
+    if result.returncode != 0 or not os.path.exists(output_path):
+        print(json.dumps({
+            "auto_editor": "failed",
+            "returncode": result.returncode,
+            "error": result.stderr[-300:] if result.stderr else "output missing",
+            "fallback": "passthrough",
+        }), flush=True)
+        return False
+
+    print(json.dumps({
+        "auto_editor": "ok",
+        "output": str(output_path),
+    }), flush=True)
+    return True
 
 
 if __name__ == "__main__":
