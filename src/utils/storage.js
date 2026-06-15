@@ -66,20 +66,35 @@ function listVideoIds() {
 }
 
 /**
- * Delete rejected videos older than TTL days.
+ * Delete rejected clips older than TTL days.
  */
-function cleanupRejectedVideos(db) {
+function cleanupRejectedClips(db) {
   const ttlMs = config.rejectedVideoTtlDays * 24 * 60 * 60 * 1000;
   const cutoff = new Date(Date.now() - ttlMs).toISOString();
 
   const rejected = db.prepare(
-    "SELECT id FROM videos WHERE status = 'rejected' AND rejected_at < ?"
+    "SELECT id, source_video_id FROM clips WHERE status = 'rejected' AND rejected_at < ?"
   ).all(cutoff);
 
-  for (const { id } of rejected) {
-    deleteVideoDir(id);
-    db.prepare('DELETE FROM videos WHERE id = ?').run(id);
-    logger.info('Video rejected dihapus (cleanup)', { videoId: id });
+  for (const { id, source_video_id } of rejected) {
+    // Delete clip directory
+    const clipDir = path.join(config.paths.output, source_video_id, 'clips', id);
+    if (fs.existsSync(clipDir)) {
+      fs.rmSync(clipDir, { recursive: true, force: true });
+      logger.info('Clip rejected dihapus (cleanup)', { clipId: id, sourceVideoId: source_video_id });
+    }
+    
+    // Delete clip record
+    db.prepare('DELETE FROM clips WHERE id = ?').run(id);
+    
+    // Check if source video has any remaining clips
+    const remainingClips = db.prepare('SELECT COUNT(*) as c FROM clips WHERE source_video_id = ?').get(source_video_id);
+    if (remainingClips.c === 0) {
+      // No clips left, delete entire source video directory
+      deleteVideoDir(source_video_id);
+      db.prepare('DELETE FROM source_videos WHERE id = ?').run(source_video_id);
+      logger.info('Source video dihapus (no clips remaining)', { sourceVideoId: source_video_id });
+    }
   }
 }
 
@@ -100,6 +115,6 @@ module.exports = {
   videoFileExists,
   deleteVideoDir,
   listVideoIds,
-  cleanupRejectedVideos,
+  cleanupRejectedClips,
   ensureDirectories,
 };

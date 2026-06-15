@@ -4,16 +4,19 @@ require('dotenv').config();
 const path = require('path');
 
 // Validate required env vars at startup
-const REQUIRED = [
-  'OPENROUTER_API_KEY',
-  'TELEGRAM_BOT_TOKEN',
-  'TELEGRAM_CHAT_ID',
-  'YOUTUBE_API_KEY',
-];
+const REQUIRED = [];
 
+// In DRY_RUN mode, API keys are optional
 if (process.env.DRY_RUN !== 'true') {
-  REQUIRED.push('GOOGLE_API_KEY');
+  REQUIRED.push('OPENROUTER_API_KEY');
+  REQUIRED.push('TELEGRAM_BOT_TOKEN');
+  REQUIRED.push('TELEGRAM_CHAT_ID');
 }
+
+// YouTube API is optional for clipper (only needed for legacy research agent)
+// if (process.env.DRY_RUN !== 'true') {
+//   REQUIRED.push('YOUTUBE_API_KEY');
+// }
 
 for (const key of REQUIRED) {
   if (!process.env[key]) {
@@ -38,26 +41,29 @@ const config = {
       research:      process.env.RESEARCH_MODEL       || DEFAULT_MODEL,
       script:        process.env.SCRIPT_MODEL         || DEFAULT_MODEL,
       metadata:      process.env.METADATA_MODEL       || DEFAULT_MODEL,
-      visualPrompt:  process.env.VISUAL_PROMPT_MODEL  || DEFAULT_MODEL,
+      clipPlanner:   process.env.CLIP_PLANNER_MODEL   || DEFAULT_MODEL,
     },
   },
 
-  // YouTube Data API v3
+  // YouTube Data API v3 (optional, only for legacy research agent)
   youtube: {
-    apiKey: process.env.YOUTUBE_API_KEY,
+    apiKey: process.env.YOUTUBE_API_KEY || null,
   },
 
-  // Edge TTS (voiceover)
-  tts: {
-    voice: process.env.TTS_VOICE || 'id-ID-ArdiNeural',
-    rate:  process.env.TTS_RATE  || '+0%',
+  // yt-dlp config
+  ytdlp: {
+    format: process.env.YTDLP_FORMAT || 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+    cookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER || null, // e.g., 'chrome', 'firefox'
   },
 
-  // Google AI Studio (AI video generation)
-  // Catatan: veo-2.0 mewajibkan akun GCP dengan billing aktif. Gunakan veo-1.0 untuk tier gratis.
-  google: {
-    apiKey: process.env.GOOGLE_API_KEY,
-    model:  process.env.GOOGLE_VIDEO_MODEL || 'veo-1.0',
+  // Whisper config
+  whisper: {
+    model: process.env.WHISPER_MODEL || 'base', // tiny, base, small, medium, large
+  },
+
+  // Scene detection config
+  sceneDetect: {
+    threshold: parseFloat(process.env.SCENE_DETECT_THRESHOLD || '27.0'),
   },
 
   // Telegram
@@ -68,6 +74,29 @@ const config = {
 
   // Retry
   maxRetry: parseInt(process.env.MAX_RETRY || '3', 10),
+
+  // LLM timeouts (ms)
+  llmTimeouts: {
+    clipPlanner:    parseInt(process.env.CLIP_PLANNER_TIMEOUT_MS    || '90000', 10),
+    optionalAgent:  parseInt(process.env.OPTIONAL_AGENT_TIMEOUT_MS  || '15000', 10),
+  },
+
+  // ClipPlanner resilience
+  clipPlannerRequireLlm: process.env.CLIP_PLANNER_REQUIRE_LLM === 'true',
+
+  // Clips per source hard cap (for testing / production cost control)
+  maxClipsPerSource: Math.max(1, Math.min(10, parseInt(process.env.MAX_CLIPS_PER_SOURCE || '3', 10) || 3)),
+
+  // Clip boundary extension (sentence-aware padding)
+  clipEndPaddingSeconds:           parseFloat(process.env.CLIP_END_PADDING_SECONDS            || '0.35'),
+  clipEndSentenceExtensionSeconds: parseFloat(process.env.CLIP_END_SENTENCE_EXTENSION_SECONDS || '3.0'),
+
+  // Clip duration constraints and short-clip repair
+  clip: {
+    minDuration:             Math.max(1,  parseFloat(process.env.CLIP_MIN_DURATION_SECONDS          || '10')),
+    maxDuration:             Math.min(120, parseFloat(process.env.CLIP_MAX_DURATION_SECONDS          || '60')),
+    targetShortRepairSeconds: parseFloat(process.env.CLIP_TARGET_SHORT_REPAIR_SECONDS || '12'),
+  },
 
   // Timeouts (ms)
   timeouts: {
@@ -84,6 +113,28 @@ const config = {
     width:       parseInt(process.env.VIDEO_WIDTH        || '1080', 10),
     height:      parseInt(process.env.VIDEO_HEIGHT       || '1920', 10),
     fps:         parseInt(process.env.VIDEO_FPS          || '30',   10),
+    // Render quality — with sanitization
+    crf:         (() => {
+      const v = parseInt(process.env.VIDEO_CRF || '20', 10);
+      return (!Number.isFinite(v) || v < 15 || v > 35) ? 20 : v;
+    })(),
+    preset:      (() => {
+      const VALID_PRESETS = ['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow'];
+      const v = (process.env.VIDEO_PRESET || 'veryfast').toLowerCase();
+      return VALID_PRESETS.includes(v) ? v : 'veryfast';
+    })(),
+    audioBitrate: (() => {
+      const v = (process.env.VIDEO_AUDIO_BITRATE || '192k').toLowerCase();
+      return /^\d+(k|m)$/.test(v) ? v : '192k';
+    })(),
+    scaleFlags:  process.env.VIDEO_SCALE_FLAGS || 'lanczos',
+    // Face-aware crop (optional, default off for stability)
+    enableFaceCrop: process.env.ENABLE_FACE_CROP === 'true',
+  },
+
+  // Caption / subtitle
+  caption: {
+    template: (process.env.CAPTION_TEMPLATE || 'default').toLowerCase(),
   },
 
   // Content

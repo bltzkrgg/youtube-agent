@@ -48,11 +48,16 @@ async function runVisualAgent() {
     ackJob(job.id);
     logger.info('Visual Agent selesai', { agent: AGENT, videoId: video_id });
 
+    // LEGACY PIPELINE DISABLED: pushJob('clip') dihentikan sementara
+    // karena sistem sudah pivot ke clip_render (UGC Clipper 9:16).
+    // Aktifkan kembali jika pipeline faceless video generator dibutuhkan.
+    /*
     pushJob('clip', { video_id, correlation_id: result.correlation_id }, {
       correlationId: result.correlation_id,
       priority: 'normal',
       timeoutMs: config.timeouts.clip,
     });
+    */
   } catch (err) {
     logger.error('Visual Agent gagal', {
       agent: AGENT, step: 'runVisualAgent',

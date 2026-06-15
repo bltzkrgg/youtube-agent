@@ -45,10 +45,10 @@ function pushJob(type, payload, opts = {}) {
     timeout_at: timeoutAt,
   };
 
-  // Idempotency check: prevent duplicate jobs of same type+correlationId
+  // Idempotency check: prevent duplicate jobs of same type+correlationId+payload
   const existing = db.getDb().prepare(
-    "SELECT id FROM jobs WHERE correlation_id = ? AND type = ? AND status NOT IN ('done','failed')"
-  ).get(correlationId, type);
+    "SELECT id FROM jobs WHERE correlation_id = ? AND type = ? AND payload = ? AND status NOT IN ('done','failed')"
+  ).get(correlationId, type, safeStringifyJson(payload));
 
   if (existing) {
     logger.warn('Job duplikat dicegah (idempotency)', { type, correlationId });
