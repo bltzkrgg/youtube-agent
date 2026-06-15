@@ -16,6 +16,7 @@ const { scoreClipMoment } = require('../moment_scoring');
 const { criticizeClipMoment } = require('../critic');
 const { generateCaptions } = require('../caption');
 const { determineReframeStrategy } = require('../reframe');
+const { analyzeTranscriptViral } = require('./localHeuristic');
 
 const AGENT = 'ClipPlannerAgent';
 
@@ -852,6 +853,30 @@ function _adjustClipBoundary(clip, transcript, sourceIngest) {
 // ─── Heuristic fallback clip plans (no LLM required) ─────────────────────────
 
 function _heuristicClipPlans(transcript, sceneDetect, sourceIngest) {
+  // Strategy 0 (new): viral-keyword scoring from transcript.
+  // Ported from errnex/auto-clip src/analyzer.py — runs on local CPU, no API
+  // key required. Picks top N non-overlapping candidates with the highest
+  // viral-signal score (keywords + question/contrast/number/density/early/punctuation).
+  if (transcript && Array.isArray(transcript.segments) && transcript.segments.length > 0) {
+    try {
+      const viralPlans = analyzeTranscriptViral({
+        segments: transcript.segments,
+        minDuration: config.clip.minDuration,
+        maxDuration: config.clip.maxDuration,
+        desiredClips: config.maxClipsPerSource,
+      });
+      if (viralPlans.length > 0) {
+        logger.info(`Viral heuristic: ${viralPlans.length} clip plan(s) generated`, { agent: AGENT });
+        return viralPlans;
+      }
+      logger.info('Viral heuristic returned 0 plans, falling back to scene-based', { agent: AGENT });
+    } catch (err) {
+      logger.warn('Viral heuristic failed, falling back to scene-based', {
+        agent: AGENT, error_message: err.message,
+      });
+    }
+  }
+
   const TARGET_MIN = 30; // seconds
   const TARGET_MAX = 55;
   const MAX_CLIPS   = 3;
